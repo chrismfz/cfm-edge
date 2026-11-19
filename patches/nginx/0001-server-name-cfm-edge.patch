@@ -1,0 +1,204 @@
+From: cfm-edge
+Subject: [PATCH] answer as "cfm-edge" in the Server header and error pages
+
+So a curl/scan shows at once that the CFM edge answered, not the origin
+(Apache/LiteSpeed behind it). server_tokens keeps its meaning:
+  off   -> Server: cfm-edge            (CFM's config sets off)
+  on    -> Server: cfm-edge/<nginx version>
+  build -> Server: cfm-edge/<nginx version> (<build>)
+Same on HTTP/1, HTTP/2 (the off value was a pre-Huffman-coded "nginx"; it is
+now encoded once at runtime, like the versioned value already was) and HTTP/3,
+and in the default error page footer.
+
+NGINX_VER is NOT changed: `cfm-edge -v` still prints "nginx version:
+nginx/X", which CFM's edgeengine.ParseVersionToken reads.
+
+--- a/src/core/nginx.h	2026-11-11 17:48:23.000000000 +0000
++++ b/src/core/nginx.h	2026-11-19 16:31:43.516148755 +0000
+@@ -20,6 +20,17 @@
+ #endif
+ 
+ #define NGINX_VAR          "NGINX"
++
++/* cfm-edge: the name this edge answers with (Server header, error page
++ * footer) on HTTP/1, HTTP/2 and HTTP/3. NGINX_VER is left alone: `-v` keeps
++ * printing "nginx version: nginx/X", which is what tools parse. */
++#define NGX_EDGE_NAME      "cfm-edge"
++#define NGX_EDGE_VER       NGX_EDGE_NAME "/" NGINX_VERSION
++#ifdef NGX_BUILD
++#define NGX_EDGE_VER_BUILD NGX_EDGE_VER " (" NGX_BUILD ")"
++#else
++#define NGX_EDGE_VER_BUILD NGX_EDGE_VER
++#endif
+ #define NGX_OLDPID_EXT     ".oldbin"
+ 
+ 
+--- a/src/http/ngx_http_header_filter_module.c	2026-11-11 17:48:23.000000000 +0000
++++ b/src/http/ngx_http_header_filter_module.c	2026-11-19 16:31:43.516338578 +0000
+@@ -47,9 +47,9 @@
+ };
+ 
+ 
+-static u_char ngx_http_server_string[] = "Server: nginx" CRLF;
+-static u_char ngx_http_server_full_string[] = "Server: " NGINX_VER CRLF;
+-static u_char ngx_http_server_build_string[] = "Server: " NGINX_VER_BUILD CRLF;
++static u_char ngx_http_server_string[] = "Server: " NGX_EDGE_NAME CRLF;
++static u_char ngx_http_server_full_string[] = "Server: " NGX_EDGE_VER CRLF;
++static u_char ngx_http_server_build_string[] = "Server: " NGX_EDGE_VER_BUILD CRLF;
+ 
+ static ngx_str_t ngx_http_early_hints_status_line =
+     ngx_string("HTTP/1.1 103 Early Hints" CRLF);
+--- a/src/http/ngx_http_special_response.c	2026-11-11 17:48:23.000000000 +0000
++++ b/src/http/ngx_http_special_response.c	2026-11-19 16:31:43.516438393 +0000
+@@ -19,21 +19,21 @@
+ 
+ 
+ static u_char ngx_http_error_full_tail[] =
+-"<hr><center>" NGINX_VER "</center>" CRLF
++"<hr><center>" NGX_EDGE_VER "</center>" CRLF
+ "</body>" CRLF
+ "</html>" CRLF
+ ;
+ 
+ 
+ static u_char ngx_http_error_build_tail[] =
+-"<hr><center>" NGINX_VER_BUILD "</center>" CRLF
++"<hr><center>" NGX_EDGE_VER_BUILD "</center>" CRLF
+ "</body>" CRLF
+ "</html>" CRLF
+ ;
+ 
+ 
+ static u_char ngx_http_error_tail[] =
+-"<hr><center>nginx</center>" CRLF
++"<hr><center>" NGX_EDGE_NAME "</center>" CRLF
+ "</body>" CRLF
+ "</html>" CRLF
+ ;
+--- a/src/http/v2/ngx_http_v2_filter_module.c	2026-11-11 17:48:23.000000000 +0000
++++ b/src/http/v2/ngx_http_v2_filter_module.c	2026-11-19 16:31:43.519519974 +0000
+@@ -120,19 +120,20 @@
+     ngx_http_core_srv_conf_t  *cscf;
+     u_char                     addr[NGX_SOCKADDR_STRLEN];
+ 
+-    static const u_char nginx[5] = { 0x84, 0xaa, 0x63, 0x55, 0xe7 };
++    static size_t nginx_len = ngx_http_v2_literal_size(NGX_EDGE_NAME);
++    static u_char nginx[ngx_http_v2_literal_size(NGX_EDGE_NAME)];
+ #if (NGX_HTTP_GZIP)
+     static const u_char accept_encoding[12] = {
+         0x8b, 0x84, 0x84, 0x2d, 0x69, 0x5b, 0x05, 0x44, 0x3c, 0x86, 0xaa, 0x6f
+     };
+ #endif
+ 
+-    static size_t nginx_ver_len = ngx_http_v2_literal_size(NGINX_VER);
+-    static u_char nginx_ver[ngx_http_v2_literal_size(NGINX_VER)];
++    static size_t nginx_ver_len = ngx_http_v2_literal_size(NGX_EDGE_VER);
++    static u_char nginx_ver[ngx_http_v2_literal_size(NGX_EDGE_VER)];
+ 
+     static size_t nginx_ver_build_len =
+-                                  ngx_http_v2_literal_size(NGINX_VER_BUILD);
+-    static u_char nginx_ver_build[ngx_http_v2_literal_size(NGINX_VER_BUILD)];
++                                  ngx_http_v2_literal_size(NGX_EDGE_VER_BUILD);
++    static u_char nginx_ver_build[ngx_http_v2_literal_size(NGX_EDGE_VER_BUILD)];
+ 
+     stream = r->stream;
+ 
+@@ -447,24 +448,25 @@
+         if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {
+             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fc->log, 0,
+                            "http2 output header: \"server: %s\"",
+-                           NGINX_VER);
++                           NGX_EDGE_VER);
+ 
+         } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {
+             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fc->log, 0,
+                            "http2 output header: \"server: %s\"",
+-                           NGINX_VER_BUILD);
++                           NGX_EDGE_VER_BUILD);
+ 
+         } else {
+-            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, fc->log, 0,
+-                           "http2 output header: \"server: nginx\"");
++            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fc->log, 0,
++                           "http2 output header: \"server: %s\"",
++                           NGX_EDGE_NAME);
+         }
+ 
+         *pos++ = ngx_http_v2_inc_indexed(NGX_HTTP_V2_SERVER_INDEX);
+ 
+         if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {
+             if (nginx_ver[0] == '\0') {
+-                p = ngx_http_v2_write_value(nginx_ver, (u_char *) NGINX_VER,
+-                                            sizeof(NGINX_VER) - 1, tmp);
++                p = ngx_http_v2_write_value(nginx_ver, (u_char *) NGX_EDGE_VER,
++                                            sizeof(NGX_EDGE_VER) - 1, tmp);
+                 nginx_ver_len = p - nginx_ver;
+             }
+ 
+@@ -473,15 +475,21 @@
+         } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {
+             if (nginx_ver_build[0] == '\0') {
+                 p = ngx_http_v2_write_value(nginx_ver_build,
+-                                            (u_char *) NGINX_VER_BUILD,
+-                                            sizeof(NGINX_VER_BUILD) - 1, tmp);
++                                            (u_char *) NGX_EDGE_VER_BUILD,
++                                            sizeof(NGX_EDGE_VER_BUILD) - 1, tmp);
+                 nginx_ver_build_len = p - nginx_ver_build;
+             }
+ 
+             pos = ngx_cpymem(pos, nginx_ver_build, nginx_ver_build_len);
+ 
+         } else {
+-            pos = ngx_cpymem(pos, nginx, sizeof(nginx));
++            if (nginx[0] == '\0') {
++                p = ngx_http_v2_write_value(nginx, (u_char *) NGX_EDGE_NAME,
++                                            sizeof(NGX_EDGE_NAME) - 1, tmp);
++                nginx_len = p - nginx;
++            }
++
++            pos = ngx_cpymem(pos, nginx, nginx_len);
+         }
+     }
+ 
+--- a/src/http/v3/ngx_http_v3_filter_module.c	2026-11-11 17:48:23.000000000 +0000
++++ b/src/http/v3/ngx_http_v3_filter_module.c	2026-11-19 16:31:43.518549199 +0000
+@@ -163,13 +163,13 @@
+ 
+     if (r->headers_out.server == NULL) {
+         if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {
+-            n = sizeof(NGINX_VER) - 1;
++            n = sizeof(NGX_EDGE_VER) - 1;
+ 
+         } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {
+-            n = sizeof(NGINX_VER_BUILD) - 1;
++            n = sizeof(NGX_EDGE_VER_BUILD) - 1;
+ 
+         } else {
+-            n = sizeof("nginx") - 1;
++            n = sizeof(NGX_EDGE_NAME) - 1;
+         }
+ 
+         len += ngx_http_v3_encode_field_lri(NULL, 0,
+@@ -344,16 +344,16 @@
+ 
+     if (r->headers_out.server == NULL) {
+         if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {
+-            p = (u_char *) NGINX_VER;
+-            n = sizeof(NGINX_VER) - 1;
++            p = (u_char *) NGX_EDGE_VER;
++            n = sizeof(NGX_EDGE_VER) - 1;
+ 
+         } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {
+-            p = (u_char *) NGINX_VER_BUILD;
+-            n = sizeof(NGINX_VER_BUILD) - 1;
++            p = (u_char *) NGX_EDGE_VER_BUILD;
++            n = sizeof(NGX_EDGE_VER_BUILD) - 1;
+ 
+         } else {
+-            p = (u_char *) "nginx";
+-            n = sizeof("nginx") - 1;
++            p = (u_char *) NGX_EDGE_NAME;
++            n = sizeof(NGX_EDGE_NAME) - 1;
+         }
+ 
+         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
