@@ -52,10 +52,11 @@ step lands; delete a section once the code and README say the same thing.
    (`.github/workflows/check-deps.yml` explains why).
 2. **Devbox build + publish.** The devbox is AlmaLinux 10 with podman, which
    is enough: EL8 is only the container image, so no EL8 machine is needed.
-   Run `ENGINE=podman make package test-all` on the devbox,
-   sign, and push to a new `cfm-edge-testing` channel on repo.nixpal.com,
-   alongside cfm, ngm, gsc-mcp and argus. Then add a `make sync`, like
-   cfm's.
+   `ENGINE=podman make package test-all`, then `make sync`. That is the same
+   upload as cfm's, and `make sync` refuses untested or already-published
+   rpms. Then, as root on repo.nixpal.com, run
+   `/root/repos-update.sh --rpm-only` to sign and publish to `/el/`
+   (README, "Release flow").
 3. **CFM integration** (cfm repo, one small PR each):
    - `scripts/install-edge.sh`, modelled on `install-angie.sh`. It renders
      `configs/openresty.conf` with the path map `tests/cfm-conf.sh` already
@@ -85,6 +86,12 @@ step lands; delete a section once the code and README say the same thing.
    with the same smoke and cfm-conf tests.
 
 ## Open decisions
+
+- **A testing channel on repo.nixpal.com?** Today `/el/` is one channel for
+  every nixpal package, and `make sync` lands there. That is safe while no
+  node runs cfm-edge, and the rpm never restarts a running edge. Once the
+  fleet runs it, a `cfm-edge-testing` repo (or an `includepkgs`/`exclude`
+  rule in `nixpal.repo`) would let one canary see a build before the rest.
 
 - **Server banner: decided, `Server: cfm-edge`** (no version; patch
   `patches/nginx/0001`). CFM is already identifiable by its challenge page and

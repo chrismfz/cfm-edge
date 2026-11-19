@@ -27,6 +27,9 @@ OUT="${REPO_DIR}/dist/el${EL}"
 Z=""
 if [ "$ENGINE" = podman ] && command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then Z=",z"; fi
 args=(run --rm --network host -v "${REPO_DIR}:/src:ro${Z}")
+# The package Release: the Makefile computes it once on the host; the
+# container's own `make rpm` must use the same value.
+[ -n "${BUILD_STAMP:-}" ] && args+=(-e BUILD_STAMP)
 # CFM sets worker_rlimit_nofile 65535. Where the host allows it, give the
 # container that much (EDGE_NOFILE=1048576); a sandbox that caps it lower
 # refuses to even start the container, so it is opt-in.
@@ -61,7 +64,7 @@ build)
         . ./versions.env
         # BuildRequires straight from the spec, with the same defines make uses.
         reqs=$(rpmspec -q --buildrequires \
-            --define "nginx_version $NGINX_VERSION" --define "edge_release 1" \
+            --define "nginx_version $NGINX_VERSION" --define "build_stamp 0" \
             --define "openssl_version x" --define "luajit_version x" --define "ndk_version x" \
             --define "lua_nginx_module_version x" --define "lua_resty_core_version x" \
             --define "lua_resty_lrucache_version x" --define "lua_cjson_version x" \

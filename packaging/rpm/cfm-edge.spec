@@ -10,6 +10,7 @@
 # EL's redhat macros expand them inside comments; escape as a double percent.
 
 %{!?nginx_version:%{error:nginx_version undefined: build through the Makefile (make rpm)}}
+%{!?build_stamp:%{error:build_stamp undefined: build through the Makefile (make rpm)}}
 
 # No LTO: LuaJIT's VM is hand-written assembly plus C that LTO is known to
 # miscompile (Fedora's own luajit package turns it off), and one switch for
@@ -31,7 +32,10 @@
 
 Name:           cfm-edge
 Version:        %{nginx_version}
-Release:        %{edge_release}%{?dist}
+# Release = build time in UTC (YYYYMMDD.HHMMSS, from the Makefile), as cfm's
+# packages carry: every build sorts newer than the last, so a fixed rebuild is
+# an update dnf sees. No dist tag: one rpm for every EL.
+Release:        %{build_stamp}
 Summary:        CFM edge proxy: nginx with the CFM Lua stack
 License:        BSD-2-Clause AND MIT AND Apache-2.0
 URL:            https://github.com/chrismfz/cfm-edge
@@ -142,6 +146,13 @@ make -C lua-cjson-%{lua_cjson_version} %{?_smp_mflags} \
     LUA_INCLUDE_DIR="$LUAJIT_INC" CC=gcc \
     CFLAGS="%{optflags} -DNDEBUG" LDFLAGS="%{build_ldflags}"
 
+# OPENSSLDIR: nginx builds the static OpenSSL with its BUILD directory as
+# OPENSSLDIR, so the binary would read openssl.cnf (as root, at start) from a
+# path like /work/build/... on every node, wherever someone created it. Pin it
+# to a private directory the package does not create: no config is loaded, the
+# same behaviour as today, and nothing outside /usr/lib/cfm-edge decides it.
+# (CFM verifies no upstream certificate through OpenSSL's default CA paths.)
+#
 # --- nginx. Only the modules CFM's edge uses; every module left out is attack
 # surface nobody audits for us (the list lives in README "What is built").
 cd nginx-%{nginx_version}
@@ -180,7 +191,7 @@ cd nginx-%{nginx_version}
     --without-http_empty_gif_module \
     --without-http_split_clients_module \
     --with-openssl="$top/openssl-%{openssl_version}" \
-    --with-openssl-opt="-fPIC no-weak-ssl-ciphers no-tests no-docs" \
+    --with-openssl-opt="-fPIC no-weak-ssl-ciphers no-tests no-docs --openssldir=%{edge_libdir}/ssl" \
     --add-module="$top/ngx_devel_kit-%{ndk_version}" \
     --add-module="$top/lua-nginx-module-%{lua_nginx_module_version}" \
     --with-cc-opt="%{optflags} -DNGX_LUA_ABORT_AT_PANIC" \
