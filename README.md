@@ -75,8 +75,26 @@ live under `/usr/lib/cfm-edge` and not `/usr/lib64`. The .deb is a later step
 dlopen'ed, `libmaxminddb` comes in through the FFI, and `user cfm;` needs
 NSS. All three break in a static binary.
 
+**What a build host needs.** Any Linux works, as long as it can run
+containers. Everything that compiles (gcc, rpm-build, perl, the pcre2/zlib
+headers) lives inside the AlmaLinux 8/9/10 containers. The host only fetches
+and verifies sources and drives those containers:
+
+- `podman` or `docker`: `ENGINE=podman` on the devbox, docker is the default.
+- `make`, `git`, `curl`, `gpg` + `gpgv` (nginx PGP check), `gzip`,
+  `sha256sum`, `python3` (check-deps).
+- A cfm checkout next to this repo (`../cfm`) or `CFM_DIR=`, for `test-all`.
+- Network to nginx.org, github.com (git over HTTPS + release downloads),
+  quay.io and the AlmaLinux mirrors.
+- Optional: `ssh` + `rsync` and a key for repo.nixpal.com (`make sync`),
+  and `shellcheck` (`make lint`).
+- About 3 GB of disk for images and the build tree.
+
+On a new VM, `make doctor` checks all of this and names what is missing.
+
 ```sh
-make package            # THE rpm: built in AlmaLinux 8 -> dist/el8/cfm-edge-<v>-<r>.x86_64.rpm
+make doctor             # does this host have what a build needs?
+make package            # THE rpm: built in AlmaLinux 8 -> dist/el8/cfm-edge-<nginx>-<YYYYMMDD.HHMMSS>.x86_64.rpm
 make test-all           # that rpm: smoke + cfm-conf on EL8, EL9, EL10
 make sources            # fetch + verify everything into SOURCES/
 make rpm-el9            # build in a clean AlmaLinux 9 container -> dist/el9/
@@ -141,8 +159,9 @@ It **refuses**:
 
 - an rpm whose exact bytes did not pass `make test-all` (`dist/el8/.tested`);
 - a filename the repo already has, in `~/packages/rpm` or under
-  `https://repo.nixpal.com/el/`. Rebuilding the same version-release would
-  silently change a published package; bump `EDGE_RELEASE` instead.
+  `https://repo.nixpal.com/el/`. Every build has its own timestamp, so this
+  catches only a `BUILD_STAMP=` reuse that would silently change a published
+  package.
 
 `FORCE=1` overrides both, knowingly.
 
@@ -158,7 +177,9 @@ or the operator runs `-t` and restarts it. Today `/el/` is a single channel
 for every nixpal package. A separate `cfm-edge-testing` channel is an open
 decision (HANDOFF.md).
 
-`EDGE_RELEASE` is the package release. It resets to 1 on a new nginx and
-goes up by one for any other pin or packaging change, so `rpm -q cfm-edge`
-always shows the nginx version first (`1.31.9-1`). There is no dist tag: the
-same file installs on every EL.
+**Versioning, like cfm's packages:** Version is the nginx version and
+Release is the build time in UTC, e.g. `cfm-edge-1.31.9-20261119.182233`.
+Every build sorts newer than the last, so a fixed or experimental rebuild is
+an update `dnf` sees, with nothing to bump by hand. `rpm -q cfm-edge` still
+shows the nginx version first. There is no dist tag: the same file installs
+on every EL. `BUILD_STAMP=` pins it to rebuild an exact release.

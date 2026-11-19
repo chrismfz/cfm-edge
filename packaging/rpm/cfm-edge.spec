@@ -10,6 +10,7 @@
 # EL's redhat macros expand them inside comments; escape as a double percent.
 
 %{!?nginx_version:%{error:nginx_version undefined: build through the Makefile (make rpm)}}
+%{!?build_stamp:%{error:build_stamp undefined: build through the Makefile (make rpm)}}
 
 # No LTO: LuaJIT's VM is hand-written assembly plus C that LTO is known to
 # miscompile (Fedora's own luajit package turns it off), and one switch for
@@ -31,7 +32,10 @@
 
 Name:           cfm-edge
 Version:        %{nginx_version}
-Release:        %{edge_release}%{?dist}
+# Release = build time in UTC (YYYYMMDD.HHMMSS, from the Makefile), as cfm's
+# packages carry: every build sorts newer than the last, so a fixed rebuild is
+# an update dnf sees. No dist tag: one rpm for every EL.
+Release:        %{build_stamp}
 Summary:        CFM edge proxy: nginx with the CFM Lua stack
 License:        BSD-2-Clause AND MIT AND Apache-2.0
 URL:            https://github.com/chrismfz/cfm-edge

@@ -5,6 +5,7 @@
 # 2.28; glibc is backward compatible) and the SAME rpm is tested on EL8, EL9
 # and EL10. No dist tag: cfm-edge-1.31.9-1.x86_64.rpm, not .el8 on an EL10 box.
 #
+#   make doctor       does this host have what a build needs?
 #   make package      THE shipped rpm: built in AlmaLinux 8 -> dist/el8/
 #   make test-all     smoke + cfm-conf of that rpm on EL8, EL9 and EL10
 #   make sync         upload that rpm to repo.nixpal.com (only if test-all passed)
@@ -37,6 +38,10 @@ SSH_CMD     ?= ssh -p $(REMOTE_PORT)
 PKG_DIR     := dist/el8
 TOPDIR       := $(CURDIR)/build/rpmbuild
 CHANGELOG_DATE := $(shell LC_ALL=C date -u '+%a %b %d %Y')
+# The package Release: build time in UTC, evaluated once per make run (`:=`).
+# cfm-edge-1.31.9-20261119.182233.x86_64.rpm sorts newer than every earlier
+# build, so a fixed rebuild is an update dnf sees. Override to rebuild exactly.
+BUILD_STAMP ?= $(shell date -u +%Y%m%d.%H%M%S)
 # SOURCE_DATE_EPOCH clamps file mtimes on EL10; use the build time, not a
 # changelog date (the lesson CFM's own spec learnt).
 export SOURCE_DATE_EPOCH ?= $(shell date -u +%s)
@@ -44,7 +49,7 @@ export SOURCE_DATE_EPOCH ?= $(shell date -u +%s)
 RPM_DEFINES := \
   --define "_topdir $(TOPDIR)" \
   --define "nginx_version $(NGINX_VERSION)" \
-  --define "edge_release $(EDGE_RELEASE)" \
+  --define "build_stamp $(BUILD_STAMP)" \
   --define "openssl_version $(OPENSSL_VERSION)" \
   --define "luajit_version $(LUAJIT_VERSION)" \
   --define "ndk_version $(NDK_VERSION)" \
@@ -58,7 +63,7 @@ RPM_DEFINES := \
   --define "edge_changelog_date $(CHANGELOG_DATE)" \
   --define "dist %{nil}"
 
-.PHONY: sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean
+.PHONY: sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean
 
 sources:
 	tools/fetch-sources.sh SOURCES
@@ -99,6 +104,30 @@ test-all:
 	cd $(PKG_DIR) && sha256sum cfm-edge-[0-9]*.x86_64.rpm > .tested
 	@echo "tested: $$(cat $(PKG_DIR)/.tested)"
 
+# What a build host needs (a new test VM: run this first). Everything that
+# compiles (gcc, rpm-build, perl, pcre2/zlib headers) lives in the AlmaLinux
+# containers; the host only fetches + verifies sources and drives containers.
+ENGINE ?= docker
+doctor:
+	@miss=0; \
+	command -v $(ENGINE) >/dev/null || command -v podman >/dev/null || command -v docker >/dev/null \
+	  || { echo "✗ a container engine: podman or docker (ENGINE=$(ENGINE))"; miss=1; }; \
+	for t in make git curl gpg gpgv gzip sha256sum python3; do \
+	  command -v $$t >/dev/null && echo "✓ $$t" || { echo "✗ $$t   (build: make sources / check-deps)"; miss=1; }; done; \
+	for t in ssh rsync; do \
+	  command -v $$t >/dev/null && echo "✓ $$t" || echo "• $$t   (only for make sync)"; done; \
+	command -v shellcheck >/dev/null && echo "✓ shellcheck" || echo "• shellcheck   (only for make lint)"; \
+	for u in https://nginx.org/download/ https://quay.io https://repo.almalinux.org/almalinux/; do \
+	  curl -fsI -o /dev/null --max-time 10 "$$u" && echo "✓ reach $$u" || { echo "✗ reach $$u"; miss=1; }; done; \
+	git ls-remote https://github.com/openresty/luajit2 HEAD >/dev/null 2>&1 \
+	  && echo "✓ git over https to github.com" || { echo "✗ git over https to github.com (modules are git-pinned)"; miss=1; }; \
+	. ./versions.env; curl -fsL -o /dev/null --max-time 20 \
+	  "https://github.com/openssl/openssl/releases/download/openssl-$$OPENSSL_VERSION/openssl-$$OPENSSL_VERSION.tar.gz.sha256" \
+	  && echo "✓ GitHub release downloads (OpenSSL)" || { echo "✗ GitHub release downloads (OpenSSL tarball)"; miss=1; }; \
+	[ -f ../cfm/configs/openresty.conf ] || [ -n "$(CFM_DIR)" ] && echo "✓ cfm checkout (CFM_DIR or ../cfm)" \
+	  || { echo "✗ a cfm checkout at ../cfm (or CFM_DIR=): test-all runs CFM's real edge config"; miss=1; }; \
+	[ $$miss = 0 ] && echo "ready: ENGINE=$(ENGINE) make package test-all" || { echo "missing pieces above"; exit 1; }
+
 # Pins: `check` only reports; `update` rewrites versions.env (exit 3 = bumped,
 # 4 = an nginx SECURITY fix: both are success here). Review
 # `git diff versions.env`, then build, test and sync.
@@ -115,9 +144,9 @@ update:
 	  *) exit $$rc;; esac
 
 # Upload THE rpm (not debuginfo/src). Refuses an rpm whose exact bytes did not
-# pass test-all, and a filename the repo already has: a rebuild with the same
-# version-release would silently change a published package (bump EDGE_RELEASE
-# instead). FORCE=1 overrides both, knowingly.
+# pass test-all, and a filename the repo already has (a build stamp reused
+# through BUILD_STAMP= would silently change a published package). FORCE=1
+# overrides both, knowingly.
 sync:
 	@set -euo pipefail; \
 	RPM_FILE="$$(ls -1 $(PKG_DIR)/cfm-edge-[0-9]*.x86_64.rpm 2>/dev/null | head -n1 || true)"; \
@@ -128,7 +157,7 @@ sync:
 	    || { echo "❌ $$NAME has not passed make test-all (or was rebuilt since): run make test-all"; exit 1; }; \
 	  if $(SSH_CMD) $(REMOTE_USER)@$(REMOTE_HOST) "test -e $(REMOTE_DIR)/rpm/$$NAME" \
 	     || curl -sfI "https://$(REMOTE_HOST)/el/$$NAME" >/dev/null; then \
-	    echo "❌ $(REMOTE_HOST) already has $$NAME: bump EDGE_RELEASE in versions.env and rebuild"; exit 1; fi; \
+	    echo "❌ $(REMOTE_HOST) already has $$NAME: rebuild (a new build gets a new stamp)"; exit 1; fi; \
 	fi; \
 	( cd $(PKG_DIR) && sha256sum "$$NAME" > cfm-edge-checksums.txt ); \
 	echo "🌐 Syncing to $(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)"; \

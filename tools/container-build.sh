@@ -61,7 +61,7 @@ build)
         . ./versions.env
         # BuildRequires straight from the spec, with the same defines make uses.
         reqs=$(rpmspec -q --buildrequires \
-            --define "nginx_version $NGINX_VERSION" --define "edge_release 1" \
+            --define "nginx_version $NGINX_VERSION" --define "build_stamp 0" \
             --define "openssl_version x" --define "luajit_version x" --define "ndk_version x" \
             --define "lua_nginx_module_version x" --define "lua_resty_core_version x" \
             --define "lua_resty_lrucache_version x" --define "lua_cjson_version x" \

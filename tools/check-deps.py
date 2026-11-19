@@ -173,7 +173,7 @@ def check_nginx(env, rep, bump):
         return
     rep.row("nginx", pinned, latest, "behind (SECURITY)" if sec else "behind")
     if bump:
-        rep.changes.update(NGINX_VERSION=latest, NGINX_SHA256=fetch_verified_nginx(latest), EDGE_RELEASE="1")
+        rep.changes.update(NGINX_VERSION=latest, NGINX_SHA256=fetch_verified_nginx(latest))
 
 
 def fetch_verified_nginx(ver):
@@ -309,8 +309,7 @@ def main():
             errors.append(f"{c}: {e}")
 
     if a.bump and rep.changes:
-        if "NGINX_VERSION" not in rep.changes:       # same nginx, new inputs: next package release
-            rep.changes["EDGE_RELEASE"] = str(int(env["EDGE_RELEASE"]) + 1)
+        # (no release counter to bump: the package Release is the build time)
         write_env(rep.changes, rep.set_comment)
 
     w = max([len(r[0]) for r in rep.rows] + [10])

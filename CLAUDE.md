@@ -70,8 +70,9 @@ make package test-all      # build on EL8; smoke + cfm-conf on EL8/9/10 (CFM_DIR
 
 - **Publish only what was tested.** `make sync` uploads only an rpm whose bytes
   `make test-all` stamped (`dist/el8/.tested`), and never one whose filename
-  the repo already has: a changed build needs a new `EDGE_RELEASE`. Don't
-  make `FORCE=1` the habit.
+  the repo already has. Release is the build time (UTC), so a new build is
+  always a new, newer package; never reuse `BUILD_STAMP=` for a different
+  build. Don't make `FORCE=1` the habit.
 
 - **One package, built on the oldest EL.** The shipped rpm is built on EL8
   (glibc 2.28) and tested unchanged on EL8, EL9 and EL10. Never ship a
