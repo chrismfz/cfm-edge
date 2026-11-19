@@ -27,6 +27,9 @@ OUT="${REPO_DIR}/dist/el${EL}"
 Z=""
 if [ "$ENGINE" = podman ] && command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then Z=",z"; fi
 args=(run --rm --network host -v "${REPO_DIR}:/src:ro${Z}")
+# The package Release: the Makefile computes it once on the host; the
+# container's own `make rpm` must use the same value.
+[ -n "${BUILD_STAMP:-}" ] && args+=(-e BUILD_STAMP)
 # CFM sets worker_rlimit_nofile 65535. Where the host allows it, give the
 # container that much (EDGE_NOFILE=1048576); a sandbox that caps it lower
 # refuses to even start the container, so it is opt-in.

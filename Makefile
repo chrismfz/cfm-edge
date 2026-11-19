@@ -3,7 +3,8 @@
 #
 # ONE package for every EL: it is built on EL8 (the oldest glibc we serve,
 # 2.28; glibc is backward compatible) and the SAME rpm is tested on EL8, EL9
-# and EL10. No dist tag: cfm-edge-1.31.9-1.x86_64.rpm, not .el8 on an EL10 box.
+# and EL10. No dist tag, and Release is the build time (UTC):
+# cfm-edge-1.31.9-20261119.182233.x86_64.rpm, not .el8 on an EL10 box.
 #
 #   make doctor       does this host have what a build needs?
 #   make package      THE shipped rpm: built in AlmaLinux 8 -> dist/el8/
@@ -38,10 +39,19 @@ SSH_CMD     ?= ssh -p $(REMOTE_PORT)
 PKG_DIR     := dist/el8
 TOPDIR       := $(CURDIR)/build/rpmbuild
 CHANGELOG_DATE := $(shell LC_ALL=C date -u '+%a %b %d %Y')
-# The package Release: build time in UTC, evaluated once per make run (`:=`).
+# The package Release: build time in UTC, computed ONCE here on the host and
+# exported, so the container's own `make rpm` uses the same value (and
+# `BUILD_STAMP=... make package` really rebuilds that exact release).
 # cfm-edge-1.31.9-20261119.182233.x86_64.rpm sorts newer than every earlier
-# build, so a fixed rebuild is an update dnf sees. Override to rebuild exactly.
-BUILD_STAMP ?= $(shell date -u +%Y%m%d.%H%M%S)
+# build, so a fixed rebuild is an update dnf sees.
+ifndef BUILD_STAMP
+BUILD_STAMP := $(shell date -u +%Y%m%d.%H%M%S)
+endif
+export BUILD_STAMP
+# Container engine for tools/container-build.sh: docker if present, else podman
+# (the devbox has only podman). ENGINE= overrides.
+ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
+export ENGINE
 # SOURCE_DATE_EPOCH clamps file mtimes on EL10; use the build time, not a
 # changelog date (the lesson CFM's own spec learnt).
 export SOURCE_DATE_EPOCH ?= $(shell date -u +%s)
@@ -107,11 +117,10 @@ test-all:
 # What a build host needs (a new test VM: run this first). Everything that
 # compiles (gcc, rpm-build, perl, pcre2/zlib headers) lives in the AlmaLinux
 # containers; the host only fetches + verifies sources and drives containers.
-ENGINE ?= docker
 doctor:
 	@miss=0; \
-	command -v $(ENGINE) >/dev/null || command -v podman >/dev/null || command -v docker >/dev/null \
-	  || { echo "✗ a container engine: podman or docker (ENGINE=$(ENGINE))"; miss=1; }; \
+	command -v $(ENGINE) >/dev/null && echo "✓ container engine: $(ENGINE)" \
+	  || { echo "✗ container engine $(ENGINE): install podman or docker (or set ENGINE=)"; miss=1; }; \
 	for t in make git curl gpg gpgv gzip sha256sum python3; do \
 	  command -v $$t >/dev/null && echo "✓ $$t" || { echo "✗ $$t   (build: make sources / check-deps)"; miss=1; }; done; \
 	for t in ssh rsync; do \
@@ -124,9 +133,9 @@ doctor:
 	. ./versions.env; curl -fsL -o /dev/null --max-time 20 \
 	  "https://github.com/openssl/openssl/releases/download/openssl-$$OPENSSL_VERSION/openssl-$$OPENSSL_VERSION.tar.gz.sha256" \
 	  && echo "✓ GitHub release downloads (OpenSSL)" || { echo "✗ GitHub release downloads (OpenSSL tarball)"; miss=1; }; \
-	[ -f ../cfm/configs/openresty.conf ] || [ -n "$(CFM_DIR)" ] && echo "✓ cfm checkout (CFM_DIR or ../cfm)" \
-	  || { echo "✗ a cfm checkout at ../cfm (or CFM_DIR=): test-all runs CFM's real edge config"; miss=1; }; \
-	[ $$miss = 0 ] && echo "ready: ENGINE=$(ENGINE) make package test-all" || { echo "missing pieces above"; exit 1; }
+	cfm="$(or $(CFM_DIR),../cfm)"; [ -f "$$cfm/configs/openresty.conf" ] && echo "✓ cfm checkout: $$cfm" \
+	  || { echo "✗ no cfm checkout at $$cfm (clone chrismfz/cfm there, or CFM_DIR=): test-all runs CFM's real edge config"; miss=1; }; \
+	[ $$miss = 0 ] && echo "ready: make package test-all   (ENGINE=$(ENGINE))" || { echo "missing pieces above"; exit 1; }
 
 # Pins: `check` only reports; `update` rewrites versions.env (exit 3 = bumped,
 # 4 = an nginx SECURITY fix: both are success here). Review
@@ -139,8 +148,10 @@ check:
 update:
 	@python3 tools/check-deps.py --bump; rc=$$?; \
 	case $$rc in 0) echo "all pins current, nothing changed";; \
-	  3|4) echo; git --no-pager diff --stat -- versions.env; \
-	       echo "pins updated$$( [ $$rc = 4 ] && echo ' (SECURITY)' ): review git diff versions.env, then make package test-all sync";; \
+	  3|4) echo; if git diff --quiet -- versions.env; then \
+	         echo "behind$$( [ $$rc = 4 ] && echo ' (SECURITY)' ), but nothing to bump automatically: see the notes above (a newer nginx line is a manual move)"; \
+	       else git --no-pager diff --stat -- versions.env; \
+	         echo "pins updated$$( [ $$rc = 4 ] && echo ' (SECURITY)' ): review git diff versions.env, then make package test-all sync"; fi;; \
 	  *) exit $$rc;; esac
 
 # Upload THE rpm (not debuginfo/src). Refuses an rpm whose exact bytes did not
