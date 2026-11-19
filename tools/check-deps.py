@@ -211,7 +211,7 @@ def check_openssl(env, rep, bump):
         sha = get(base + ".sha256").decode().split()[0]
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
             raise RuntimeError(f"openssl {latest}: unexpected .sha256 content")
-        rep.changes.update(OPENSSL_VERSION=latest, OPENSSL_SHA256=sha)
+        rep.changes.update(OPENSSL_VERSION=latest, OPENSSL_SHA256=sha)  # sha already validated above
         rep.notes.append(f"openssl {latest}: bump chrismfz/php's OPENSSL pin in the same week (one LTS line, two repos).")
 
 
@@ -228,10 +228,13 @@ def check_openresty(env, rep, bump):
     if vkey(or_nginx) < vkey(env["NGINX_VERSION"]):
         rep.notes.append(f"openresty master ({head}) still validates its Lua set against nginx {or_nginx}; "
                          f"we run it on {env['NGINX_VERSION']} (the smoke + cfm-conf tests are the check).")
+    staged = {}                       # all-or-nothing: the set moves as one
     for key, (repo, prefix, name) in OPENRESTY_SET.items():
         ver = None
         for i, l in enumerate(mt):
-            if "get-tarball" in l and name in l:
+            # the exact repo in the URL: "lua-nginx-module" alone also matches
+            # stream-lua-nginx-module's line
+            if "get-tarball" in l and f"github.com/{repo}/" in l:
                 vs = [x for x in mt[:i] if re.match(r"^ver=", x)]
                 ver = vs[-1].split("=", 1)[1].strip() if vs else None
                 break
@@ -244,8 +247,12 @@ def check_openresty(env, rep, bump):
             continue
         rep.row(label, pinned, ver, "behind")
         if bump:
-            rep.changes[f"{key}_VERSION"] = ver
-            rep.changes[f"{key}_COMMIT"] = commit_of(repo, prefix + ver)
+            staged[f"{key}_VERSION"] = ver
+            staged[f"{key}_COMMIT"] = commit_of(repo, prefix + ver)
+    rep.changes.update(staged)        # only reached when every module resolved
+    if staged:
+        rep.set_comment = (f"# --- OpenResty set (openresty/openresty util/mirror-tarballs @ {head}, "
+                           f"main_ver={or_nginx})")
     # WATCH ONLY: each module's own newest tag. A fix a module ships that
     # OpenResty has not taken into its set yet is reported (never bumped: the
     # set moves as one), so a security fix there is seen, not missed.
@@ -259,9 +266,6 @@ def check_openresty(env, rep, bump):
         if tag_key(newest) > tag_key(ours):
             rep.notes.append(f"watch: {repo} has {prefix}{newest}, newer than the OpenResty set's {ours}; "
                              "read its changes; if it is a security fix, take it as a patch until OpenResty moves.")
-    if bump and any(k.endswith("_VERSION") and k[:-8] in OPENRESTY_SET for k in rep.changes):
-        rep.set_comment = (f"# --- OpenResty set (openresty/openresty util/mirror-tarballs @ {head}, "
-                           f"main_ver={or_nginx})")
 
 
 def check_standalone(env, rep, bump, which):
@@ -274,8 +278,8 @@ def check_standalone(env, rep, bump, which):
         return
     rep.row(which, pinned, latest, "behind")
     if bump:
-        rep.changes[f"{key}_VERSION"] = latest
-        rep.changes[f"{key}_COMMIT"] = commit_of(repo, "v" + latest)
+        commit = commit_of(repo, "v" + latest)     # resolve first: never a VERSION without its COMMIT
+        rep.changes.update({f"{key}_VERSION": latest, f"{key}_COMMIT": commit})
 
 
 def main():

@@ -16,8 +16,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EL="${1:?usage: $0 <8|9|10> <build|smoke>}"
-MODE="${2:?usage: $0 <8|9|10> <build|smoke>}"
+EL="${1:?usage: $0 <8|9|10> <build|smoke|cfm-conf>}"
+MODE="${2:?usage: $0 <8|9|10> <build|smoke|cfm-conf>}"
 ENGINE="${ENGINE:-docker}"
 IMAGE="${IMAGE:-quay.io/almalinuxorg/almalinux:${EL}}"
 OUT="${REPO_DIR}/dist/el${EL}"
