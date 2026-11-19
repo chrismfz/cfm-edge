@@ -47,7 +47,7 @@ jobs:
           set -e
           [ -f "$RUNNER_TEMP/deps.md" ] && cat "$RUNNER_TEMP/deps.md" >> "$GITHUB_STEP_SUMMARY"
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          # 0 current, 3 behind, 4 behind with an nginx security fix, else broken
+          # 0 current, 3 behind, 4 nginx security fix, 2 a check broke (nothing found)
           case "$rc" in 0|3|4) ;; *) exit "$rc" ;; esac
 
       - name: Open or update the PR
@@ -59,7 +59,10 @@ jobs:
           RC: ${{ steps.check.outputs.rc }}
         run: |
           if [ -z "$(git status --porcelain)" ]; then
-            echo "behind, but --bump changed nothing (see the summary)"; exit 0
+            # Nothing to bump on our line, but something is behind (typically a
+            # newer nginx line). Stay red so it is seen; a SECURITY one above all.
+            echo "::error::behind (rc=$RC) but --bump changed nothing: a manual move is needed (see the summary)"
+            exit 1
           fi
           title="deps: automated pin update"
           [ "$RC" = 4 ] && title="SECURITY: nginx security release — $title"

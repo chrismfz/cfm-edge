@@ -35,7 +35,8 @@ Every git pin is recorded as tag + the commit it resolves to.
     tools/check-deps.py --only nginx,openssl
     tools/check-deps.py --summary f.md     # also write a markdown report
 
-Exit: 0 current, 3 behind, 4 behind with an nginx SECURITY fix, 2 error.
+Exit: 4 an nginx SECURITY fix exists (on our line or a newer one), 3 behind,
+2 a check failed and nothing was found, 0 current. A finding outranks errors.
 Stdlib only, plus the git CLI and (for --bump of nginx) gpg/gpgv.
 """
 import argparse, hashlib, os, re, subprocess, sys, tempfile, urllib.request
@@ -89,9 +90,13 @@ def read_env():
     return env
 
 
-def write_env(changes):
+def write_env(changes, set_comment=None):
     with open(VERSIONS) as f:
         text = f.read()
+    if set_comment:
+        text, n = re.subn(r"(?m)^# --- OpenResty set \(.*$", set_comment, text)
+        if n != 1:
+            raise SystemExit("versions.env: the '# --- OpenResty set (...)' comment line is missing")
     for k, v in changes.items():
         text, n = re.subn(rf"(?m)^{k}=.*$", f"{k}={v}", text)
         if n != 1:
@@ -124,6 +129,7 @@ def commit_of(repo, tag):
 class Report:
     def __init__(self):
         self.rows, self.changes, self.notes = [], {}, []
+        self.set_comment = None
         self.behind = self.security = False
 
     def row(self, name, pinned, latest, status):
@@ -140,23 +146,32 @@ def check_nginx(env, rep, bump):
     rels = sorted(set(re.findall(r"nginx-(\d+\.\d+\.\d+)\.tar\.gz\"", listing)), key=vkey)
     line = [v for v in rels if v.startswith(major_minor + ".")]
     latest = line[-1] if line else pinned
-    newer_minor = [v for v in rels if vkey(v)[:2] > vkey(pinned)[:2]]
-    if newer_minor:
-        rep.notes.append(f"nginx: a newer line exists ({newer_minor[-1]}); staying on {major_minor}.x "
-                         "until OpenResty's set moves (see the openresty row).")
-    if vkey(latest) <= vkey(pinned):
-        rep.row("nginx", pinned, latest, "current")
-        return
-    changes = get("https://nginx.org/en/CHANGES").decode(errors="replace")
+    newer_line = [v for v in rels if vkey(v)[:2] > vkey(pinned)[:2]]
+    newest = newer_line[-1] if newer_line else latest
+    # Security entries in EVERY release newer than the pin, on any line: once
+    # nginx cuts a stable branch and starts the next mainline, fixes stop
+    # landing on our line, and a check confined to it would go blind.
     sec = []
-    for ver, body in re.findall(r"Changes with nginx (\S+)\s+[^\n]*\n(.*?)(?=\nChanges with nginx |\Z)", changes, re.S):
-        if vkey(pinned) < vkey(ver) <= vkey(latest):
-            sec += [f"{ver}: " + " ".join(m.split()) for m in re.findall(r"\*\) Security: (.*?)(?=\n\s*\*\)|\Z)", body, re.S)]
-    status = "behind (SECURITY)" if sec else "behind"
-    rep.row("nginx", pinned, latest, status)
+    if vkey(newest) > vkey(pinned):
+        changes = get("https://nginx.org/en/CHANGES").decode(errors="replace")
+        for ver, body in re.findall(r"Changes with nginx (\S+)\s+[^\n]*\n(.*?)(?=\nChanges with nginx |\Z)", changes, re.S):
+            if vkey(ver) > vkey(pinned):
+                sec += [f"{ver}: " + " ".join(m.split()) for m in re.findall(r"\*\) Security: (.*?)(?=\n\s*\*\)|\Z)", body, re.S)]
     if sec:
         rep.security = True
         rep.notes += ["nginx security: " + s for s in sec]
+    if newer_line:
+        rep.notes.append(f"nginx: a newer line exists ({newest}); moving to it is a manual, reviewed change "
+                         "(check the openresty row: their Lua set must support it)."
+                         + (" It carries SECURITY fixes our line may never get." if sec else ""))
+    if vkey(latest) <= vkey(pinned):
+        if newer_line:
+            # Nothing to bump on our line, but stay red: a newer line exists.
+            rep.row("nginx", pinned, newest, "behind (SECURITY, newer line)" if sec else "behind (newer line)")
+        else:
+            rep.row("nginx", pinned, latest, "current")
+        return
+    rep.row("nginx", pinned, latest, "behind (SECURITY)" if sec else "behind")
     if bump:
         rep.changes.update(NGINX_VERSION=latest, NGINX_SHA256=fetch_verified_nginx(latest), EDGE_RELEASE="1")
 
@@ -245,7 +260,8 @@ def check_openresty(env, rep, bump):
             rep.notes.append(f"watch: {repo} has {prefix}{newest}, newer than the OpenResty set's {ours}; "
                              "read its changes; if it is a security fix, take it as a patch until OpenResty moves.")
     if bump and any(k.endswith("_VERSION") and k[:-8] in OPENRESTY_SET for k in rep.changes):
-        rep.notes.append(f"openresty set taken from openresty/openresty@{head}: update the comment above it in versions.env.")
+        rep.set_comment = (f"# --- OpenResty set (openresty/openresty util/mirror-tarballs @ {head}, "
+                           f"main_ver={or_nginx})")
 
 
 def check_standalone(env, rep, bump, which):
@@ -291,7 +307,7 @@ def main():
     if a.bump and rep.changes:
         if "NGINX_VERSION" not in rep.changes:       # same nginx, new inputs: next package release
             rep.changes["EDGE_RELEASE"] = str(int(env["EDGE_RELEASE"]) + 1)
-        write_env(rep.changes)
+        write_env(rep.changes, rep.set_comment)
 
     w = max([len(r[0]) for r in rep.rows] + [10])
     for name, pinned, latest, status in rep.rows:
@@ -315,11 +331,14 @@ def main():
                 f.write("\nMerge only after CI is green (build + smoke + cfm-conf on EL8/9/10), "
                         "then canary before promoting to stable (README, Release flow).\n")
 
-    if errors:
-        return 2
+    # A finding outranks a broken check: one flaky upstream (an ls-remote, the
+    # openresty clone) must never hold back a SECURITY or bump PR that another
+    # check found. The errors are in the summary / PR body either way.
     if rep.security:
         return 4
-    return 3 if rep.behind else 0
+    if rep.behind:
+        return 3
+    return 2 if errors else 0
 
 
 if __name__ == "__main__":

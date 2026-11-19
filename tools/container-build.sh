@@ -51,6 +51,9 @@ fi
 case "$MODE" in
 build)
     mkdir -p "$OUT"
+    # Never leave an older build next to this one: smoke installs every
+    # cfm-edge-<v>-<r>.x86_64.rpm it finds here.
+    rm -f "$OUT"/cfm-edge*.rpm
     # shellcheck disable=SC2016
     "$ENGINE" "${args[@]}" -v "${OUT}:/out${Z:+:z}" "$IMAGE" bash -c "$prologue"'
         dnf -q -y install rpm-build make gcc git gnupg2 findutils binutils which >/dev/null
