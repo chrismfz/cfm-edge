@@ -1,0 +1,6 @@
+# fetched + verified inputs (tools/fetch-sources.sh), never committed
+/SOURCES/
+# rpmbuild tree and built packages
+/build/
+/dist/
+__pycache__/

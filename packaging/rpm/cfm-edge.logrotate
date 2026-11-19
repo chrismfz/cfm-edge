@@ -1,0 +1,15 @@
+# Package-owned rotation of the package's own log dir. CFM's
+# check_logrotate_coverage.sh must list /var/log/cfm-edge/ as vendor-rotated
+# (never a second declaration of these files: logrotate aborts on duplicates).
+/var/log/cfm-edge/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        [ -s /run/cfm-edge.pid ] && kill -USR1 "$(cat /run/cfm-edge.pid)" 2>/dev/null || true
+    endscript
+}

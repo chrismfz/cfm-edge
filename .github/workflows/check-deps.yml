@@ -1,0 +1,81 @@
+# The watcher: every 2 hours, tools/check-deps.py --bump. When any pin is
+# behind (nginx on our line, OpenSSL 3.5.x, the OpenResty Lua set, resty-http,
+# maxminddb), it opens or updates ONE PR (branch deps/auto-update) with the
+# rewritten versions.env. An nginx release with a "Security:" entry gets
+# "SECURITY" in the PR title.
+#
+# Detection is automatic, adoption is not: the PR still needs green CI and a
+# human merge, then the canary (README, "Release flow").
+#
+# GOTCHA: a PR opened with the default GITHUB_TOKEN does NOT trigger other
+# workflows (GitHub's rule), so its CI would never run. Add a token as the
+# DEPS_PR_TOKEN secret (fine-grained: contents + pull-requests write on this
+# repo) and CI runs on the bump PR; without it, run ci by hand
+# (workflow_dispatch on the deps/auto-update branch).
+# Also: Settings -> Actions -> General -> "Allow GitHub Actions to create and
+# approve pull requests".
+name: check-deps
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: check-deps
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+
+      - name: Check pinned dependencies
+        id: check
+        run: |
+          set +e
+          python3 tools/check-deps.py --bump --summary "$RUNNER_TEMP/deps.md"
+          rc=$?
+          set -e
+          [ -f "$RUNNER_TEMP/deps.md" ] && cat "$RUNNER_TEMP/deps.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # 0 current, 3 behind, 4 behind with an nginx security fix, else broken
+          case "$rc" in 0|3|4) ;; *) exit "$rc" ;; esac
+
+      - name: Open or update the PR
+        if: steps.check.outputs.rc == '3' || steps.check.outputs.rc == '4'
+        env:
+          GH_TOKEN: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+          BRANCH: deps/auto-update
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "behind, but --bump changed nothing (see the summary)"; exit 0
+          fi
+          title="deps: automated pin update"
+          [ "$RC" = 4 ] && title="SECURITY: nginx security release — $title"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -q -F - <<EOF
+          $title
+
+          $(cat "$RUNNER_TEMP/deps.md")
+          EOF
+          git push -f origin "$BRANCH"
+          state="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || true)"
+          if [ "$state" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/deps.md"
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/deps.md"
+          fi
