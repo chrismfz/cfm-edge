@@ -35,8 +35,10 @@ install script does not add it either. cfm_clearance's HMAC runs on
 `ngx.hmac_sha256`; the smoke test pins that path.
 
 **Our patch:** `patches/lua-resty-maxminddb/0001`. Upstream loads
-`libmaxminddb.so`, which only the -devel package ships. We load the runtime
-soname `.so.0` first.
+`libmaxminddb.so`, which only the -devel package ships; CFM solved that on
+2026-04-15 by making its own package require `libmaxminddb-devel`. cfm-edge
+loads the runtime soname `.so.0` first, so the edge does not depend on a
+-devel package.
 
 ## Layout on a node
 

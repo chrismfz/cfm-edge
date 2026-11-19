@@ -28,10 +28,18 @@ step lands; delete a section once the code and README say the same thing.
   CFM edge template uses no `resolver`, `try_files`/`alias` or
   `proxy_protocol`, so four other CVEs don't apply.
 - **lua-resty-maxminddb loads `libmaxminddb.so`**, which only `-devel`
-  ships. On a node with just `libmaxminddb` (the runtime package), `cfm_geo`
-  silently has no geo. cfm-edge patches the soname
-  (`patches/lua-resty-maxminddb/`). **Check the Angie and OpenResty nodes:**
-  `ls /usr/lib64/libmaxminddb.so`. If it is missing, they have no geo.
+  ships. This is a known issue, fixed fleet-wide on 2026-04-15: geo failed at
+  the first lookup.
+  - cfm commit `44f45016` made `libmaxminddb-devel` (-dev on Debian) a
+    dependency of the cfm package, and `e673aedc` added it to
+    `install-openresty.sh`.
+  - virgo got a manual install the same hour. earth, mars and orion pulled
+    it in with the next `dnf update` of cfm. rigel, titan, speedhost and
+    qualityweb already had it through cPanel's installer.
+  - Checked 2026-11-19: all 8 edge nodes have the symlink.
+
+  cfm-edge still carries `patches/lua-resty-maxminddb/0001` (runtime soname
+  first), so it does not depend on a -devel package being present.
 - **Stock ngx_lua has no `ngx.hmac_sha256`.** On this edge `cfm_clearance`
   uses `resty.sha256`, which works only because nginx exports the static
   OpenSSL's symbols (`-Wl,-E`). The smoke test pins it.
@@ -42,7 +50,9 @@ step lands; delete a section once the code and README say the same thing.
    private, add the `CFM_READ_TOKEN` secret (read-only, fine-grained). For
    check-deps PRs to trigger CI, add `DEPS_PR_TOKEN`
    (`.github/workflows/check-deps.yml` explains why).
-2. **Devbox build + publish.** Run `make package test-all` on the devbox,
+2. **Devbox build + publish.** The devbox is AlmaLinux 10 with podman, which
+   is enough: EL8 is only the container image, so no EL8 machine is needed.
+   Run `ENGINE=podman make package test-all` on the devbox,
    sign, and push to a new `cfm-edge-testing` channel on repo.nixpal.com,
    alongside cfm, ngm, gsc-mcp and argus. Then add a `make sync`, like
    cfm's.
