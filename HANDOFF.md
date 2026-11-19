@@ -67,20 +67,23 @@ step lands; delete a section once the code and README say the same thing.
      pid file that never appears and kills the edge. Then: stop the old edge,
      `cfm-edge -t`, start, and roll back on failure. The same script does
      upgrades: the rpm deliberately does not restart the edge.
-   - `internal/edgeengine/edgeengine.go`: add `cfm-edge` to
-     `ServiceCandidates` and `BinaryPaths` (`/usr/sbin/cfm-edge`). Then
-     check the other hard-coded edge paths: `internal/dnat/cpanel_off.go`
-     (panel listeners conf), `internal/edgelog`, `internal/healthmodel`,
-     `internal/dnat/cli.go detectEdgeService`, `internal/status`,
-     `internal/mcpserver/whats_wrong.go` and `cmd/cfm/edgeban_reconcile.go`.
+   - The daemon side: cfm-edge as a third engine in `edgeengine.Profiles`
+     ([chrismfz/cfm#1725](https://github.com/chrismfz/cfm/pull/1725)). It
+     lists what the packaging change must still do: refresh the
+     `/etc/cfm-edge/` sidecars, write cfm-edge's IPv6 listen files, and make
+     the panel Lua guard prefer the active engine. cfm-web shows it as a
+     "CFM Edge" badge
+     ([chrismfz/cfm-web#164](https://github.com/chrismfz/cfm-web/pull/164)).
    - `scripts/tests/check_logrotate_coverage.sh`: `/var/log/cfm-edge/` is
      rotated by the package's own `/etc/logrotate.d/cfm-edge`. List it as
      vendor-rotated and never declare it twice.
-4. **Canary** on qualityweb (Angie today, light traffic): run
+4. **Before the canary:** ROADMAP.md §1 (unit stop timeout and
+   `LimitNOFILE`, the pid line, h2/h3 back on).
+5. **Canary** on qualityweb (Angie today, light traffic): run
    `install-edge.sh` with h2/h3 back on, check `edge_health`, and compare its
    error log with what Angie logged. Then roll out to the other Angie nodes,
    which already run the same module set, and to the OpenResty nodes last.
-5. **The .deb.** Package the same EL8-built tree with `dpkg-deb`, the way
+6. **The .deb.** Package the same EL8-built tree with `dpkg-deb`, the way
    cfm's Makefile builds its deb. The paths are already distro-neutral
    (`/usr/lib/cfm-edge`). Test it on Debian 12 and Ubuntu 24.04 containers
    with the same smoke and cfm-conf tests.

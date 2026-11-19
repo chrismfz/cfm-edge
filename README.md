@@ -9,6 +9,9 @@ nginx2root HTTP/2 RCE, CVE-2026-123007). A day later neither OpenResty nor
 Angie had shipped it, and every CFM edge waited on two third parties. With
 cfm-edge the wait is the time from nginx.org's release to our own build.
 
+What comes next (hardening, the fleet blockers): ROADMAP.md. The
+integration state and next steps: HANDOFF.md.
+
 ## What is built
 
 | Component | Source | Pin |
