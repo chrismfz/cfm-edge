@@ -1,0 +1,97 @@
+# The watcher: every 2 hours, tools/check-deps.py --bump. When any pin is
+# behind (nginx on our line, OpenSSL 3.5.x, the OpenResty Lua set, resty-http,
+# maxminddb), it opens or updates ONE PR (branch deps/auto-update) with the
+# rewritten versions.env. An nginx release with a "Security:" entry gets
+# "SECURITY" in the PR title.
+#
+# Detection is automatic, adoption is not: the PR still needs green CI and a
+# human merge, then the canary (README, "Release flow").
+#
+# GOTCHA: a PR opened with the default GITHUB_TOKEN does NOT trigger other
+# workflows (GitHub's rule), so its CI would never run. Add a token as the
+# DEPS_PR_TOKEN secret (fine-grained: contents + pull-requests write on this
+# repo) and CI runs on the bump PR; without it, run ci by hand
+# (workflow_dispatch on the deps/auto-update branch).
+# Also: Settings -> Actions -> General -> "Allow GitHub Actions to create and
+# approve pull requests".
+name: check-deps
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: check-deps
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+
+      - name: Check pinned dependencies
+        id: check
+        run: |
+          set +e
+          python3 tools/check-deps.py --bump --summary "$RUNNER_TEMP/deps.md"
+          rc=$?
+          set -e
+          [ -f "$RUNNER_TEMP/deps.md" ] && cat "$RUNNER_TEMP/deps.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # 0 current, 3 behind, 4 nginx security fix, 2 a check broke (nothing found)
+          case "$rc" in 0|3|4) ;; *) exit "$rc" ;; esac
+
+      - name: Open or update the PR
+        if: steps.check.outputs.rc == '3' || steps.check.outputs.rc == '4'
+        env:
+          GH_TOKEN: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+          BRANCH: deps/auto-update
+          RC: ${{ steps.check.outputs.rc }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            # Nothing to bump (typically a newer nginx line, a manual move).
+            # Red only for SECURITY: a job that is red every 2h for a plain new
+            # line teaches everyone to ignore it, security runs included.
+            if [ "$RC" = 4 ]; then
+              echo "::error::SECURITY fix exists but --bump changed nothing: move the nginx line by hand (see the summary)"
+              exit 1
+            fi
+            echo "::notice::behind but nothing to bump automatically (see the summary)"; exit 0
+          fi
+          title="deps: automated pin update"
+          [ "$RC" = 4 ] && title="SECURITY: nginx security release — $title"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Never overwrite a fix a human pushed onto the bump branch: if the
+          # remote branch has a commit not made by this bot, leave it alone.
+          if git fetch -q origin "$BRANCH" 2>/dev/null; then
+            others="$(git log --format='%ae' "origin/$BASE..FETCH_HEAD" | grep -vc '41898282+github-actions\[bot\]@users.noreply.github.com' || true)"
+            if [ "$others" != 0 ]; then
+              echo "::warning::$BRANCH carries $others human commit(s); not force-pushing over them. Merge or close that PR first."
+              exit 0
+            fi
+          fi
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -q -F - <<EOF
+          $title
+
+          $(cat "$RUNNER_TEMP/deps.md")
+          EOF
+          git push -f origin "$BRANCH"
+          state="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || true)"
+          if [ "$state" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/deps.md"
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/deps.md"
+          fi

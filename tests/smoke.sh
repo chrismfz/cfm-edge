@@ -1,0 +1,162 @@
+#!/bin/bash
+# smoke.sh — prove an INSTALLED cfm-edge can do what CFM's edge asks of it.
+#
+# Run as root on a host (or container) where the rpm is installed and nothing
+# listens on 127.0.0.1:9099/9443/9081. It starts its own instance from a
+# scratch prefix (never /etc/cfm-edge), so it is safe next to a live edge.
+#
+# Covers the edge features CFM depends on (checked against cfm's configs/):
+#   - every non-CFM Lua module CFM requires: cjson(.safe), bit, ngx.ssl,
+#     ngx.balancer, resty.http, resty.maxminddb (+ resty.core/lrucache);
+#   - TLS + HTTP/2, and the QUIC/HTTP/3 listener parses and binds;
+#   - ssl_certificate_by_lua (sslcollector's path: clear + set cert from PEM);
+#   - balancer_by_lua (cfm.lua's origin-keepalive upstreams);
+#   - the binary's linkage: private LuaJIT, no system libssl/libcrypto.
+set -euo pipefail
+
+# Everything here is loopback: never route it through an egress proxy.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+
+BIN="${BIN:-/usr/sbin/cfm-edge}"
+fail=0
+ok()   { printf '  ok    %s\n' "$*"; }
+bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
+check(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+
+P="$(mktemp -d /tmp/cfm-edge-smoke.XXXXXX)"
+trap '"$BIN" -p "$P" -c "$P/conf/nginx.conf" -s stop >/dev/null 2>&1 || true; rm -rf "$P"' EXIT
+mkdir -p "$P"/{conf,logs,certs}
+
+echo "== binary"
+"$BIN" -V 2>"$P/V" || true
+cat "$P/V"
+check "nginx -V names lua-nginx-module" grep -q 'lua-nginx-module' "$P/V"
+check "built with OpenSSL 3.5" grep -qE 'built with OpenSSL 3\.5\.' "$P/V"
+check "http_v3 compiled in" grep -q -- '--with-http_v3_module' "$P/V"
+ldd "$BIN" >"$P/ldd"
+check "links the private LuaJIT" grep -qE 'libluajit-5\.1\.so\.2 => /usr/lib/cfm-edge/luajit/lib/' "$P/ldd"
+check "no unresolved libraries" bash -c "! grep -q 'not found' '$P/ldd'"
+check "no system libssl/libcrypto" bash -c "! grep -qE 'lib(ssl|crypto)\.so' '$P/ldd'"
+# OpenSSL is static, so LuaJIT FFI users (resty.sha256 = cfm_clearance's
+# HMAC backend on this edge: there is no ngx.hmac_sha256 in stock ngx_lua)
+# reach it only if the binary exports its symbols (nginx links with -Wl,-E).
+for sym in SHA256_Init SHA256_Update SHA256_Final ngx_http_lua_ffi_get_ctx_ref; do
+    check "exports $sym for FFI" bash -c "nm -D --defined-only '$BIN' | grep -qw $sym"
+done
+
+echo "== package placeholder config"
+check "cfm-edge -t on /etc/cfm-edge/nginx.conf" "$BIN" -t -q
+
+# Two certificates: the static default, and the one Lua swaps in by SNI.
+mkcert() { openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$1" \
+           -keyout "$P/certs/$1.key" -out "$P/certs/$1.crt" >/dev/null 2>&1; }
+mkcert default.test
+mkcert lua.test
+# Workers run as nobody: let them read the scratch prefix (test certs only).
+chmod 0755 "$P" "$P/certs"; chmod 0644 "$P"/certs/*
+
+cat >"$P/conf/nginx.conf" <<EOF
+worker_processes 1;
+error_log $P/logs/error.log info;
+pid $P/logs/nginx.pid;
+events { worker_connections 256; }
+http {
+    access_log off;
+    client_body_temp_path $P/logs/cb;
+    proxy_temp_path       $P/logs/px;
+    lua_shared_dict smoke 1m;
+
+    upstream lua_balanced {
+        server 0.0.0.1;
+        balancer_by_lua_block {
+            local b = require "ngx.balancer"
+            assert(b.set_current_peer("127.0.0.1", 9099))
+        }
+    }
+
+    server {
+        listen 127.0.0.1:9099;
+        location = /requires {
+            default_type application/json;
+            content_by_lua_block {
+                local cjson = require "cjson.safe"
+                local res = {}
+                for _, m in ipairs({"cjson", "cjson.safe", "bit", "ngx.ssl", "ngx.balancer",
+                                    "resty.core", "resty.lrucache", "resty.string", "resty.http", "resty.maxminddb"}) do
+                    local ok, err = pcall(require, m)
+                    res[m] = ok and "ok" or tostring(err)
+                end
+                -- maxminddb: init() must get as far as MMDB_open (a missing file),
+                -- i.e. ffi.load found libmaxminddb by its runtime soname.
+                local mm = require "resty.maxminddb"
+                local ok, err = pcall(mm.init, "/nonexistent/GeoLite2-City.mmdb")
+                res.maxminddb_ffi = (not ok and tostring(err):find("load", 1, true))
+                                    and ("ffi: " .. tostring(err)) or "ok"
+                res.shdict = ngx.shared.smoke:set("k", 1) and "ok" or "set failed"
+                -- resty.sha256 over the FFI (cfm_clearance's HMAC-SHA256 backend here)
+                local sha = require("resty.sha256"):new()
+                sha:update("abc")
+                local hex = require("resty.string").to_hex(sha:final())
+                res.sha256 = (hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                             and "ok" or ("got " .. hex)
+                ngx.say(cjson.encode(res))
+            }
+        }
+        location = /hello { return 200 "hello\n"; }
+    }
+
+    server {
+        listen 127.0.0.1:9081;
+        location / { proxy_pass http://lua_balanced/hello; }
+    }
+
+    server {
+        listen 127.0.0.1:9443 ssl;
+        listen 127.0.0.1:9443 quic reuseport;
+        http2 on;
+        http3 on;
+        ssl_certificate     $P/certs/default.test.crt;
+        ssl_certificate_key $P/certs/default.test.key;
+        ssl_certificate_by_lua_block {
+            local ssl = require "ngx.ssl"
+            if ssl.server_name() ~= "lua.test" then return end
+            local function slurp(p) local f = assert(io.open(p)); local s = f:read("*a"); f:close(); return s end
+            assert(ssl.clear_certs())
+            assert(ssl.set_cert(assert(ssl.parse_pem_cert(slurp("$P/certs/lua.test.crt")))))
+            assert(ssl.set_priv_key(assert(ssl.parse_pem_priv_key(slurp("$P/certs/lua.test.key")))))
+        }
+        location / { return 200 "proto=\$server_protocol\n"; }
+    }
+}
+EOF
+
+echo "== CFM-shaped config"
+check "-t on the smoke config (quic listener included)" "$BIN" -p "$P" -c "$P/conf/nginx.conf" -t -q
+"$BIN" -p "$P" -c "$P/conf/nginx.conf"
+for _ in $(seq 1 50); do [ -s "$P/logs/nginx.pid" ] && break; sleep 0.1; done
+check "started" test -s "$P/logs/nginx.pid"
+
+req="$(curl -fsS http://127.0.0.1:9099/requires || true)"
+echo "  requires: $req"
+for m in cjson cjson.safe bit ngx.ssl ngx.balancer resty.core resty.lrucache resty.string resty.http resty.maxminddb maxminddb_ffi shdict sha256; do
+    check "lua: $m" grep -q "\"$m\":\"ok\"" <<<"$req"
+done
+
+
+check "balancer_by_lua proxies" bash -c "curl -fsS http://127.0.0.1:9081/ | grep -q hello"
+check "TLS + HTTP/2" bash -c "curl -fsSk --http2 https://127.0.0.1:9443/ | grep -q 'proto=HTTP/2.0'"
+check "ssl_certificate_by_lua swaps the cert by SNI" bash -c \
+    "curl -sSkv --resolve lua.test:9443:127.0.0.1 https://lua.test:9443/ 2>&1 | grep -q 'CN=lua.test'"
+check "default cert without that SNI" bash -c \
+    "curl -sSkv --resolve other.test:9443:127.0.0.1 https://other.test:9443/ 2>&1 | grep -q 'CN=default.test'"
+check "UDP 9443 bound for QUIC" bash -c "grep -qi ':24E3 ' /proc/net/udp"
+if curl --version | grep -q HTTP3; then
+    check "HTTP/3 request" bash -c "curl -fsSk --http3-only https://127.0.0.1:9443/ | grep -q 'proto=HTTP/3.0'"
+else
+    echo "  skip  HTTP/3 request (this curl has no HTTP/3)"
+fi
+check "no [alert]/[emerg]/lua errors in error.log" bash -c \
+    "! grep -E '\[(alert|emerg|crit)\]|lua entry thread aborted|runtime error' '$P/logs/error.log'"
+
+"$BIN" -p "$P" -c "$P/conf/nginx.conf" -s quit || true
+if [ "$fail" = 0 ]; then echo "SMOKE OK"; else echo "SMOKE FAILED"; sed -n '1,80p' "$P/logs/error.log"; exit 1; fi

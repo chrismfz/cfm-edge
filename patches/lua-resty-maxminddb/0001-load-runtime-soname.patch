@@ -1,0 +1,26 @@
+From: cfm-edge
+Subject: [PATCH] load libmaxminddb by its runtime soname first
+
+ffi.load('libmaxminddb') makes the dynamic loader look for libmaxminddb.so,
+the unversioned symlink that only libmaxminddb-devel ships. With just the
+runtime package installed (libmaxminddb: libmaxminddb.so.0), init() raised,
+CFM's cfm_geo.lua (pcall-guarded) degraded to "no geo", and nothing said so.
+Try the soname first; keep the old name as the fallback.
+
+--- a/lib/resty/maxminddb.lua	2026-11-19 15:44:22.661343304 +0000
++++ b/lib/resty/maxminddb.lua	2026-11-19 15:44:22.702301906 +0000
+@@ -198,7 +198,13 @@
+   for profile, location in pairs(profiles) do
+ 
+     _D[profile] = {}
+-    _D[profile].maxm = ffi.load('libmaxminddb')
++    -- cfm-edge: load the runtime soname first. 'libmaxminddb' resolves to
++    -- libmaxminddb.so, which only the -devel package ships, so a node with
++    -- just the runtime library silently had no geo. Fall back to the old
++    -- name for hosts that do have the dev symlink.
++    local ok_so, maxm = pcall(ffi.load, 'libmaxminddb.so.0')
++    if not ok_so then maxm = ffi.load('libmaxminddb') end
++    _D[profile].maxm = maxm
+     _D[profile].mmdb = ffi_new('MMDB_s')
+     local maxmind_ready = _D[profile].maxm.MMDB_open(location, 0, _D[profile].mmdb)
+ 

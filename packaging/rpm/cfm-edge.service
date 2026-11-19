@@ -1,0 +1,25 @@
+[Unit]
+Description=CFM edge proxy (nginx + CFM Lua stack)
+Documentation=https://github.com/chrismfz/cfm-edge
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
+# Deliberately no Conflicts= with openresty/angie: a stray `systemctl start
+# cfm-edge` would then stop the live edge and take every site down. Switching
+# edges is the install script's job (it stops one, -t's and starts the other).
+
+[Service]
+Type=forking
+PIDFile=/run/cfm-edge.pid
+ExecStartPre=/usr/sbin/cfm-edge -t -q
+ExecStart=/usr/sbin/cfm-edge
+ExecReload=/usr/sbin/cfm-edge -t -q
+ExecReload=/bin/kill -s HUP $MAINPID
+KillSignal=SIGQUIT
+KillMode=mixed
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=2
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
