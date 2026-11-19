@@ -142,6 +142,13 @@ make -C lua-cjson-%{lua_cjson_version} %{?_smp_mflags} \
     LUA_INCLUDE_DIR="$LUAJIT_INC" CC=gcc \
     CFLAGS="%{optflags} -DNDEBUG" LDFLAGS="%{build_ldflags}"
 
+# OPENSSLDIR: nginx builds the static OpenSSL with its BUILD directory as
+# OPENSSLDIR, so the binary would read openssl.cnf (as root, at start) from a
+# path like /work/build/... on every node, wherever someone created it. Pin it
+# to a private directory the package does not create: no config is loaded, the
+# same behaviour as today, and nothing outside /usr/lib/cfm-edge decides it.
+# (CFM verifies no upstream certificate through OpenSSL's default CA paths.)
+#
 # --- nginx. Only the modules CFM's edge uses; every module left out is attack
 # surface nobody audits for us (the list lives in README "What is built").
 cd nginx-%{nginx_version}
@@ -180,7 +187,7 @@ cd nginx-%{nginx_version}
     --without-http_empty_gif_module \
     --without-http_split_clients_module \
     --with-openssl="$top/openssl-%{openssl_version}" \
-    --with-openssl-opt="-fPIC no-weak-ssl-ciphers no-tests no-docs" \
+    --with-openssl-opt="-fPIC no-weak-ssl-ciphers no-tests no-docs --openssldir=%{edge_libdir}/ssl" \
     --add-module="$top/ngx_devel_kit-%{ndk_version}" \
     --add-module="$top/lua-nginx-module-%{lua_nginx_module_version}" \
     --with-cc-opt="%{optflags} -DNGX_LUA_ABORT_AT_PANIC" \

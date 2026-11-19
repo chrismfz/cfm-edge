@@ -40,6 +40,12 @@ ldd "$BIN" >"$P/ldd"
 check "links the private LuaJIT" grep -qE 'libluajit-5\.1\.so\.2 => /usr/lib/cfm-edge/luajit/lib/' "$P/ldd"
 check "no unresolved libraries" bash -c "! grep -q 'not found' '$P/ldd'"
 check "no system libssl/libcrypto" bash -c "! grep -qE 'lib(ssl|crypto)\.so' '$P/ldd'"
+# The static OpenSSL must not look for its config (openssl.cnf, which can load
+# providers/engines) under a build directory. Its MODULESDIR/ENGINESDIR still
+# name the build tree (nginx fixes OpenSSL's --prefix), but they are only used
+# when a config or OPENSSL_MODULES asks for a module.
+check "OPENSSLDIR is the private /usr/lib/cfm-edge/ssl" bash -c \
+    "strings '$BIN' | grep -q '^/usr/lib/cfm-edge/ssl\$' && ! strings '$BIN' | grep -qE '\.openssl/ssl\$'"
 # OpenSSL is static, so LuaJIT FFI users (resty.sha256 = cfm_clearance's
 # HMAC backend on this edge: there is no ngx.hmac_sha256 in stock ngx_lua)
 # reach it only if the binary exports its symbols (nginx links with -Wl,-E).
