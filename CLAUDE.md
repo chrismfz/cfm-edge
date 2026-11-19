@@ -68,6 +68,11 @@ make lint
 make package test-all      # build on EL8; smoke + cfm-conf on EL8/9/10 (CFM_DIR=../cfm)
 ```
 
+- **Publish only what was tested.** `make sync` uploads only an rpm whose bytes
+  `make test-all` stamped (`dist/el8/.tested`), and never one whose filename
+  the repo already has: a changed build needs a new `EDGE_RELEASE`. Don't
+  make `FORCE=1` the habit.
+
 - **One package, built on the oldest EL.** The shipped rpm is built on EL8
   (glibc 2.28) and tested unchanged on EL8, EL9 and EL10. Never ship a
   per-EL build: built on EL9 it needs GLIBC_2.34 and refuses EL8. When EL8

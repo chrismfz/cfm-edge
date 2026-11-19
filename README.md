@@ -122,12 +122,41 @@ sha256 is recorded.
 
 ## Release flow
 
-1. Merge the bump PR after CI is green.
-2. Build on the devbox (`make package test-all`), sign, and publish to the
-   **`cfm-edge-testing`** channel of repo.nixpal.com.
-3. Canary on one host (qualityweb): `edge_health` stays clean for N hours.
-4. Promote to **`stable`**. Nodes take it from there; the edge is never
-   unattended-upgraded fleet-wide straight from a build.
+On the devbox (AlmaLinux 10 + podman; EL8 is only the container image):
+
+```sh
+make check                              # what is behind upstream (changes nothing)
+make update                             # rewrite versions.env; review git diff
+ENGINE=podman make package test-all     # build on EL8, test on EL8/9/10
+make sync                               # upload to repo.nixpal.com (like cfm)
+```
+
+The usual way in is the check-deps PR (CI green, then merge); `make update`
+does the same locally when you won't wait for it.
+
+`make sync` uploads only `cfm-edge-<v>-<r>.x86_64.rpm` (no debuginfo or src)
+to `chris@repo.nixpal.com:~/packages/rpm`, plus
+`~/packages/cfm-edge-checksums.txt`. It never touches cfm's `checksums.txt`.
+It **refuses**:
+
+- an rpm whose exact bytes did not pass `make test-all` (`dist/el8/.tested`);
+- a filename the repo already has, in `~/packages/rpm` or under
+  `https://repo.nixpal.com/el/`. Rebuilding the same version-release would
+  silently change a published package; bump `EDGE_RELEASE` instead.
+
+`FORCE=1` overrides both, knowingly.
+
+Publishing is the same as for cfm. As root on repo.nixpal.com, run
+`/root/repos-update.sh --rpm-only`. It signs with the NixPal key, runs
+createrepo into `/el/`, and signs the repomd. Nodes see it there
+(`gpgcheck=1`).
+
+Then **canary** on one host (qualityweb) and keep `edge_health` clean for N
+hours before any other node upgrades. The rpm never restarts a running edge
+(`%systemd_postun`); a node takes a new build only when CFM's install script
+or the operator runs `-t` and restarts it. Today `/el/` is a single channel
+for every nixpal package. A separate `cfm-edge-testing` channel is an open
+decision (HANDOFF.md).
 
 `EDGE_RELEASE` is the package release. It resets to 1 on a new nginx and
 goes up by one for any other pin or packaging change, so `rpm -q cfm-edge`
