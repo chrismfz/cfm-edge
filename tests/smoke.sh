@@ -53,6 +53,16 @@ for sym in SHA256_Init SHA256_Update SHA256_Final ngx_http_lua_ffi_get_ctx_ref; 
     check "exports $sym for FFI" bash -c "nm -D --defined-only '$BIN' | grep -qw $sym"
 done
 
+echo "== systemd unit"
+U=/usr/lib/systemd/system/cfm-edge.service
+check "unit installed" test -f "$U"
+# A graceful stop (SIGQUIT) needs time to finish open uploads and websockets.
+check "TimeoutStopSec=90 (graceful stop)" grep -qx 'TimeoutStopSec=90' "$U"
+check "LimitNOFILE=262144 (as openresty.service)" grep -qx 'LimitNOFILE=262144' "$U"
+check "KillSignal=SIGQUIT" grep -qx 'KillSignal=SIGQUIT' "$U"
+check "PIDFile=/run/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge.pid' "$U"
+check "no Conflicts= with the live edge" bash -c "! grep -q '^Conflicts=' '$U'"
+
 echo "== package placeholder config"
 check "cfm-edge -t on /etc/cfm-edge/nginx.conf" "$BIN" -t -q
 

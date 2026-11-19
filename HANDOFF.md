@@ -77,8 +77,8 @@ step lands; delete a section once the code and README say the same thing.
    - `scripts/tests/check_logrotate_coverage.sh`: `/var/log/cfm-edge/` is
      rotated by the package's own `/etc/logrotate.d/cfm-edge`. List it as
      vendor-rotated and never declare it twice.
-4. **Before the canary:** ROADMAP.md §1 (unit stop timeout and
-   `LimitNOFILE`, the pid line, h2/h3 back on).
+4. **Before the canary:** ROADMAP.md §1 (the pid line, h2/h3 back on; the
+   unit's stop timeout and `LimitNOFILE` are done).
 5. **Canary** on qualityweb (Angie today, light traffic): run
    `install-edge.sh` with h2/h3 back on, check `edge_health`, and compare its
    error log with what Angie logged. Then roll out to the other Angie nodes,
