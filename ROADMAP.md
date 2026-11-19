@@ -18,15 +18,17 @@ promised as done until the code says so.
 Small changes, but each is visible the first time `install-edge.sh` stops
 and starts an edge.
 
-- [ ] **`TimeoutStopSec=5` → `90`** in `cfm-edge.service`.
+- [x] **`TimeoutStopSec=5` → `90`** in `cfm-edge.service` (smoke test
+  pins it).
   - `openresty.service` on the fleet has 1min 30s today.
   - With 5 seconds, every `systemctl stop` or `restart` SIGKILLs whatever
     has not finished: large uploads, websockets, cPanel/webmail sessions
     that pass through the edge. `install-edge.sh` stops and starts on
     every switch, so that is where it would show.
-  - Alternatively or in addition: `worker_shutdown_timeout` in CFM's edge
-    config, for a clean upper bound that does not depend on the unit.
-- [ ] **`LimitNOFILE=262144`** in the unit, to match `openresty.service`.
+  - Still open, in CFM's edge config: `worker_shutdown_timeout`, for a clean
+    upper bound that does not depend on the unit.
+- [x] **`LimitNOFILE=262144`** in the unit, to match `openresty.service`
+  (smoke test pins it).
   - CFM's config sets `worker_rlimit_nofile 65535`. The workers apply it
     before they drop privileges, so the workers are covered today.
   - The unit limit means we no longer depend on that line if the config

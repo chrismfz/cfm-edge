@@ -16,7 +16,15 @@ ExecReload=/usr/sbin/cfm-edge -t -q
 ExecReload=/bin/kill -s HUP $MAINPID
 KillSignal=SIGQUIT
 KillMode=mixed
-TimeoutStopSec=5
+# SIGQUIT is a graceful stop: workers finish their open requests first. Give
+# them the 90s openresty.service has on the fleet. With 5s, every stop or
+# restart (install-edge.sh does one on each switch) would SIGKILL large uploads,
+# websockets and cPanel/webmail sessions passing through the edge.
+TimeoutStopSec=90
+# Match openresty.service. CFM's config also sets worker_rlimit_nofile, which
+# the workers apply before dropping privileges; the unit limit means the edge
+# does not depend on that line staying there.
+LimitNOFILE=262144
 Restart=on-failure
 RestartSec=2
 PrivateTmp=true
