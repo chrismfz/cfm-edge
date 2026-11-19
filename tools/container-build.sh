@@ -22,7 +22,11 @@ ENGINE="${ENGINE:-docker}"
 IMAGE="${IMAGE:-quay.io/almalinuxorg/almalinux:${EL}}"
 OUT="${REPO_DIR}/dist/el${EL}"
 
-args=(run --rm --network host -v "${REPO_DIR}:/src:ro")
+# SELinux hosts (EL with podman, e.g. the devbox) refuse unlabelled bind
+# mounts: add the shared relabel option there.
+Z=""
+if [ "$ENGINE" = podman ] && command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then Z=",z"; fi
+args=(run --rm --network host -v "${REPO_DIR}:/src:ro${Z}")
 # CFM sets worker_rlimit_nofile 65535. Where the host allows it, give the
 # container that much (EDGE_NOFILE=1048576); a sandbox that caps it lower
 # refuses to even start the container, so it is opt-in.
@@ -48,7 +52,7 @@ case "$MODE" in
 build)
     mkdir -p "$OUT"
     # shellcheck disable=SC2016
-    "$ENGINE" "${args[@]}" -v "${OUT}:/out" "$IMAGE" bash -c "$prologue"'
+    "$ENGINE" "${args[@]}" -v "${OUT}:/out${Z:+:z}" "$IMAGE" bash -c "$prologue"'
         dnf -q -y install rpm-build make gcc git gnupg2 findutils binutils which >/dev/null
         cp -a /src /work && cd /work && rm -rf build dist
         . ./versions.env
@@ -71,7 +75,7 @@ build)
 smoke)
     ls "$OUT"/cfm-edge-[0-9]*.x86_64.rpm >/dev/null 2>&1 || { echo "no rpm in $OUT; run: $0 $EL build" >&2; exit 1; }
     # shellcheck disable=SC2016
-    "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro" "$IMAGE" bash -c "$prologue"'
+    "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro${Z}" "$IMAGE" bash -c "$prologue"'
         dnf -q -y install --allowerasing curl procps-ng openssl binutils /rpms/cfm-edge-[0-9]*.x86_64.rpm >/dev/null
         bash /src/tests/smoke.sh
     '
@@ -81,7 +85,7 @@ cfm-conf)
     CFM_DIR="${CFM_DIR:-$(cd "$REPO_DIR/.." && pwd)/cfm}"
     [ -f "$CFM_DIR/configs/openresty.conf" ] || { echo "CFM_DIR=$CFM_DIR is not a cfm checkout" >&2; exit 2; }
     # shellcheck disable=SC2016
-    "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro" -v "${CFM_DIR}:/cfm:ro" "$IMAGE" bash -c "$prologue"'
+    "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro${Z}" -v "${CFM_DIR}:/cfm:ro${Z}" "$IMAGE" bash -c "$prologue"'
         dnf -q -y install --allowerasing curl procps-ng openssl /rpms/cfm-edge-[0-9]*.x86_64.rpm >/dev/null
         bash /src/tests/cfm-conf.sh /cfm
     '
