@@ -70,6 +70,15 @@ def vkey(v):
     return [int(x) if x.isdigit() else x for x in re.split(r"[.\-]", v)]
 
 
+def tag_key(v):
+    """Order release tags incl. rc's: 0.10.32rc8 < 0.10.32 < 0.10.33rc1."""
+    parts = []
+    for n, a in re.findall(r"(\d+)|([a-zA-Z]+)", v):
+        parts.append((1, int(n), "") if n else (0, 0, a.lower()))
+    # a bare release sorts after its own rc's: pad with a "release" marker
+    return parts + [(0.5, 0, "")]
+
+
 def read_env():
     env = {}
     with open(VERSIONS) as f:
@@ -222,6 +231,19 @@ def check_openresty(env, rep, bump):
         if bump:
             rep.changes[f"{key}_VERSION"] = ver
             rep.changes[f"{key}_COMMIT"] = commit_of(repo, prefix + ver)
+    # WATCH ONLY: each module's own newest tag. A fix a module ships that
+    # OpenResty has not taken into its set yet is reported (never bumped: the
+    # set moves as one), so a security fix there is seen, not missed.
+    for key, (repo, prefix, name) in OPENRESTY_SET.items():
+        pat = re.compile(rf"{re.escape(prefix)}(\d[\w.\-]*)")
+        tags = [m.group(1) for t in git_tags(repo) for m in [pat.fullmatch(t)] if m]
+        if not tags:
+            continue
+        newest = max(tags, key=tag_key)
+        ours = rep.changes.get(f"{key}_VERSION", env[f"{key}_VERSION"])
+        if tag_key(newest) > tag_key(ours):
+            rep.notes.append(f"watch: {repo} has {prefix}{newest}, newer than the OpenResty set's {ours}; "
+                             "read its changes; if it is a security fix, take it as a patch until OpenResty moves.")
     if bump and any(k.endswith("_VERSION") and k[:-8] in OPENRESTY_SET for k in rep.changes):
         rep.notes.append(f"openresty set taken from openresty/openresty@{head}: update the comment above it in versions.env.")
 
