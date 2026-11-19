@@ -34,11 +34,17 @@ install script does not add it either. cfm_clearance's HMAC runs on
 `resty.sha256` over the FFI here, because stock ngx_lua has no
 `ngx.hmac_sha256`; the smoke test pins that path.
 
-**Our patch:** `patches/lua-resty-maxminddb/0001`. Upstream loads
-`libmaxminddb.so`, which only the -devel package ships; CFM solved that on
-2026-04-15 by making its own package require `libmaxminddb-devel`. cfm-edge
-loads the runtime soname `.so.0` first, so the edge does not depend on a
--devel package.
+**Our patches:**
+
+- `patches/nginx/0001`: the edge answers as **`Server: cfm-edge`** (no
+  version with `server_tokens off`) on HTTP/1, HTTP/2 and HTTP/3 and in the
+  default error pages, so a curl shows at once that the edge, not the origin,
+  answered. `-v` still prints `nginx/X` for tools that parse it.
+- `patches/lua-resty-maxminddb/0001`: upstream loads `libmaxminddb.so`,
+  which only the -devel package ships. CFM solved that on 2026-04-15 by
+  making its own package require `libmaxminddb-devel`. cfm-edge loads the
+  runtime soname `.so.0` first, so the edge does not depend on a -devel
+  package.
 
 ## Layout on a node
 

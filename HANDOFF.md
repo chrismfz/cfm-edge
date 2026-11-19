@@ -86,10 +86,11 @@ step lands; delete a section once the code and README say the same thing.
 
 ## Open decisions
 
-- **Server banner.** Stock nginx with `server_tokens off` sends
-  `Server: nginx`, which is the most generic value there is. Recommendation:
-  keep it, with no patch to maintain. A unique string like `cfm` would make
-  the fleet a single Shodan query.
+- **Server banner: decided, `Server: cfm-edge`** (no version; patch
+  `patches/nginx/0001`). CFM is already identifiable by its challenge page and
+  `cfm_*` cookies, so a generic banner hid little, while knowing at a glance
+  that the edge answered rather than the origin helps every debug session.
+  `-v` is untouched.
 - **Mainline vs stable nginx.** We track mainline (1.31.x), like OpenResty
   and Angie. check-deps reports a newer minor line but never moves to it on
   its own.

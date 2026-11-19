@@ -33,6 +33,9 @@ cat "$P/V"
 check "nginx -V names lua-nginx-module" grep -q 'lua-nginx-module' "$P/V"
 check "built with OpenSSL 3.5" grep -qE 'built with OpenSSL 3\.5\.' "$P/V"
 check "http_v3 compiled in" grep -q -- '--with-http_v3_module' "$P/V"
+# -v keeps the stock "nginx/X" (CFM's edgeengine.ParseVersionToken reads it);
+# only what clients see says cfm-edge (patches/nginx/0001).
+check "-v still reports nginx/<version>" grep -qE '^nginx version: nginx/[0-9]' "$P/V"
 ldd "$BIN" >"$P/ldd"
 check "links the private LuaJIT" grep -qE 'libluajit-5\.1\.so\.2 => /usr/lib/cfm-edge/luajit/lib/' "$P/ldd"
 check "no unresolved libraries" bash -c "! grep -q 'not found' '$P/ldd'"
@@ -62,6 +65,7 @@ pid $P/logs/nginx.pid;
 events { worker_connections 256; }
 http {
     access_log off;
+    server_tokens off;        # as CFM's edge config sets it
     client_body_temp_path $P/logs/cb;
     proxy_temp_path       $P/logs/px;
     lua_shared_dict smoke 1m;
@@ -103,6 +107,8 @@ http {
             }
         }
         location = /hello { return 200 "hello\n"; }
+        location = /e404  { return 404; }
+        location = /tokens { server_tokens on; return 404; }
     }
 
     server {
@@ -144,6 +150,14 @@ done
 
 
 check "balancer_by_lua proxies" bash -c "curl -fsS http://127.0.0.1:9081/ | grep -q hello"
+check "Server: cfm-edge on HTTP/1.1 (server_tokens off)" bash -c \
+    "curl -sSI http://127.0.0.1:9099/hello | grep -qi '^server: cfm-edge.$'"
+check "Server: cfm-edge on HTTP/2" bash -c \
+    "curl -sSkI --http2 https://127.0.0.1:9443/ | grep -qi '^server: cfm-edge.$'"
+check "server_tokens on: Server: cfm-edge/<nginx version>" bash -c \
+    "curl -sSI http://127.0.0.1:9099/tokens | grep -qiE '^server: cfm-edge/[0-9]+\.[0-9]+\.[0-9]+.$'"
+check "error page footer says cfm-edge, never nginx" bash -c \
+    "body=\$(curl -sS http://127.0.0.1:9099/e404); grep -q '<center>cfm-edge</center>' <<<\"\$body\" && ! grep -qi 'nginx' <<<\"\$body\""
 check "TLS + HTTP/2" bash -c "curl -fsSk --http2 https://127.0.0.1:9443/ | grep -q 'proto=HTTP/2.0'"
 check "ssl_certificate_by_lua swaps the cert by SNI" bash -c \
     "curl -sSkv --resolve lua.test:9443:127.0.0.1 https://lua.test:9443/ 2>&1 | grep -q 'CN=lua.test'"

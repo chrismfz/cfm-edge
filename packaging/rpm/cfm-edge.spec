@@ -52,6 +52,7 @@ Source21:       cfm-edge.logrotate
 Source22:       nginx.conf
 
 # Our own patches, one change each (patches/<component>/ in the repo).
+Patch1:         nginx-0001-server-name-cfm-edge.patch
 Patch100:       lua-resty-maxminddb-0001-load-runtime-soname.patch
 
 BuildRequires:  gcc
@@ -97,6 +98,10 @@ OpenResty or Angie edge, and the CFM install script switches between them.
 
 %prep
 %setup -q -c -n cfm-edge-%{version} -a 1 -a 2 -a 3 -a 4 -a 5 -a 6 -a 7 -a 8 -a 9 -a 10
+
+pushd nginx-%{nginx_version}
+%patch -P 1 -p1
+popd
 
 pushd lua-resty-maxminddb-%{lua_resty_maxminddb_version}
 %patch -P 100 -p1
