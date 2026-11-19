@@ -61,8 +61,11 @@ step lands; delete a section once the code and README say the same thing.
      `configs/openresty.conf` with the path map `tests/cfm-conf.sh` already
      proves (`/usr/local/openresty/nginx/{conf,logs}` → `/etc/cfm-edge`,
      `/var/log/cfm-edge`), rather than adding a third template that would
-     drift. Then: stop the old edge, `cfm-edge -t`, start, and roll back on
-     failure.
+     drift. One addition to that map: the `pid` line must become
+     `/run/cfm-edge.pid`, the unit's `PIDFile=`. Otherwise systemd waits for a
+     pid file that never appears and kills the edge. Then: stop the old edge,
+     `cfm-edge -t`, start, and roll back on failure. The same script does
+     upgrades: the rpm deliberately does not restart the edge.
    - `internal/edgeengine/edgeengine.go`: add `cfm-edge` to
      `ServiceCandidates` and `BinaryPaths` (`/usr/sbin/cfm-edge`). Then
      check the other hard-coded edge paths: `internal/dnat/cpanel_off.go`

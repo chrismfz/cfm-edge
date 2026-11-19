@@ -52,7 +52,9 @@ a canary**.
 - **The package never takes the live edge's ports.** The placeholder
   `nginx.conf` listens on 127.0.0.1:9099 only. The unit has no `Conflicts=`
   (a stray start would stop openresty or angie) and is not enabled. Switching
-  edges belongs to CFM's install script.
+  edges belongs to CFM's install script. Nor does an rpm upgrade restart it
+  (`%systemd_postun`, not `_with_restart`): a restart drops every connection,
+  and a new binary that refuses the live config would leave the edge down.
 - **A test that cannot run must fail.** `cfm-conf.sh` fails when CFM's
   checkout is missing. Its only skips are written-down environment limits:
   the resty.openssl mTLS WARN (also present on OpenResty nodes), and the

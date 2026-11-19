@@ -138,7 +138,7 @@ fi
 # does not add it either; CFM uses no upstream client certs).
 grep -hE "module '[^']+' not found|failed to load|attempt to call|\[emerg\]|\[alert\]" \
     "$R"/logs/*.log "$R"/req/logs/error.log 2>/dev/null \
-    | grep -vE 'resty\.openssl|http_connect\.lua' \
+    | grep -vE 'resty\.openssl' \
     | grep -vE "$nofile_skip" | sort -u | head -20 >"$R/loaderr" || true
 check "no Lua load errors in the edge's error logs" test ! -s "$R/loaderr"
 [ -s "$R/loaderr" ] && sed 's/^/        /' "$R/loaderr"

@@ -195,9 +195,9 @@ make -C nginx-%{nginx_version} install DESTDIR=%{buildroot}
 rm -f %{buildroot}%{edge_confdir}/*.default
 rm -f %{buildroot}%{edge_confdir}/{fastcgi,fastcgi.conf,fastcgi_params,scgi_params,uwsgi_params,koi-utf,koi-win,win-utf}
 install -p -m 0644 %{SOURCE22} %{buildroot}%{edge_confdir}/nginx.conf
+# No sample html: CFM's config uses none, and nginx's 50x.html signs itself
+# "Faithfully yours, nginx."
 rm -rf %{buildroot}%{_datadir}/cfm-edge/logs %{buildroot}%{_datadir}/cfm-edge/html
-install -d -m 0755 %{buildroot}%{_datadir}/cfm-edge/html
-install -p -m 0644 nginx-%{nginx_version}/html/50x.html %{buildroot}%{_datadir}/cfm-edge/html/
 
 # Lua libraries: pure Lua into lualib, the C module into the arch dir.
 install -d %{buildroot}%{lualib_dir} %{buildroot}%{site_lualib_dir} %{buildroot}%{clualib_dir}
@@ -235,8 +235,12 @@ if readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "luajit-stage"; then echo 
 %preun
 %systemd_preun cfm-edge.service
 
+# No restart on upgrade: this is the in-path edge. A stop+start drops every
+# connection, and if the new binary's -t refuses the live config the edge
+# stays DOWN. The new binary takes over only when the operator or CFM's
+# install script runs -t and restarts (or USR2-upgrades) it, after a canary.
 %postun
-%systemd_postun_with_restart cfm-edge.service
+%systemd_postun cfm-edge.service
 
 %files
 %license nginx-%{nginx_version}/LICENSE

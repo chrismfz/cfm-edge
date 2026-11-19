@@ -52,7 +52,7 @@ loads the runtime soname `.so.0` first, so the edge does not depend on a
 | `/usr/share/cfm-edge/site/lualib/` | operator-added Lua, searched first |
 | `/var/log/cfm-edge/` | logs (rotated by the package's own `/etc/logrotate.d/cfm-edge`) |
 | `/var/lib/cfm-edge/` | temp paths |
-| `cfm-edge.service` | systemd unit: **not** enabled and **no** `Conflicts=` with openresty/angie |
+| `cfm-edge.service` | systemd unit: **not** enabled, **no** `Conflicts=` with openresty/angie, and **not** restarted by an rpm upgrade |
 
 Installing the rpm never touches the live edge. Switching a node over is
 the job of CFM's `install-edge.sh` (to be written, HANDOFF.md).
