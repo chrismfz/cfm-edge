@@ -25,8 +25,18 @@ and starts an edge.
     has not finished: large uploads, websockets, cPanel/webmail sessions
     that pass through the edge. `install-edge.sh` stops and starts on
     every switch, so that is where it would show.
-  - Still open, in CFM's edge config: `worker_shutdown_timeout`, for a clean
-    upper bound that does not depend on the unit.
+- [ ] **`worker_shutdown_timeout` in the config `install-edge.sh` renders**
+  (cfm repo), e.g. 10-15s. On a stop, nginx closes its listening sockets at
+  once and waits for open connections. CFM's config proxies streams with
+  `proxy_read_timeout 1h`, so a single websocket holds a stop for the unit's
+  full 90s, and new connections are refused until the next start. This
+  setting is the real bound on that window; `TimeoutStopSec` is only the
+  backstop.
+  - `install-edge.sh`'s switch should not sit in that window either: the old
+    edge has closed its ports as soon as it got SIGQUIT, so the new one can
+    start while the old one drains. Measure it on the canary.
+  - Decide whether OpenResty/Angie get the same line: their units have the
+    same 90s today.
 - [x] **`LimitNOFILE=262144`** in the unit, to match `openresty.service`
   (smoke test pins it).
   - CFM's config sets `worker_rlimit_nofile 65535`. The workers apply it

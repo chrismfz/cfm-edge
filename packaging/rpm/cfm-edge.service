@@ -16,10 +16,16 @@ ExecReload=/usr/sbin/cfm-edge -t -q
 ExecReload=/bin/kill -s HUP $MAINPID
 KillSignal=SIGQUIT
 KillMode=mixed
-# SIGQUIT is a graceful stop: workers finish their open requests first. Give
-# them the 90s openresty.service has on the fleet. With 5s, every stop or
-# restart (install-edge.sh does one on each switch) would SIGKILL large uploads,
-# websockets and cPanel/webmail sessions passing through the edge.
+# SIGQUIT is a graceful stop: nginx closes its listening sockets at once, then
+# workers finish their open requests. 90s, as openresty.service has on the
+# fleet; with 5s, every stop or restart would SIGKILL large uploads, websockets
+# and cPanel/webmail sessions passing through the edge.
+# The cost: one long-lived connection (CFM's conf proxies streams with
+# proxy_read_timeout 1h) holds a stop for the full 90s, and the ports refuse
+# new connections until the next start. The real bound on that window is
+# worker_shutdown_timeout in the edge config (ROADMAP.md §1); this is the
+# backstop. A reload (HUP) is unaffected: the old workers drain while the new
+# ones already serve.
 TimeoutStopSec=90
 # Match openresty.service. CFM's config also sets worker_rlimit_nofile, which
 # the workers apply before dropping privileges; the unit limit means the edge
