@@ -62,7 +62,9 @@ sed -e "s#/usr/local/openresty/nginx/conf/#$R/conf/#g" \
 
 echo "== cfm config ($(basename "$CONF_SRC")) on $("$BIN" -v 2>&1)"
 left="$(grep -nE '/usr/local/openresty|/etc/angie|/var/lib/cfm/' "$R/conf/nginx.conf" | grep -vE '^\s*[0-9]+:\s*#' || true)"
-[ -z "$left" ] || { echo "  note: unrendered live paths (comments excluded):"; echo "$left" | sed 's/^/        /'; }
+# A live path left in the config would make -t read (or miss) THIS host's file:
+# map every new prefix in the sed above instead.
+if [ -n "$left" ]; then bad "CFM config names live paths the test does not map:"; echo "$left" | sed 's/^/        /'; exit 1; fi
 if "$BIN" -p "$R" -c "$R/conf/nginx.conf" -t 2>"$R/t.out"; then ok "-t on the real CFM config"; else
     bad "-t on the real CFM config"; cat "$R/t.out"; exit 1; fi
 
@@ -78,6 +80,12 @@ check "HTTP answered through cfm.lua" bash -c "[[ '$code80' =~ ^[1-5][0-9][0-9]$
 check "HTTPS/h2 answered through cfm.lua" bash -c "[[ '$code443' =~ ^[1-5][0-9][0-9]\ 2$ ]]"
 
 # Every CFM module, required inside a real nginx (same lua_package_path shape).
+# Only ENTRY scripts may fail at require time (they run request logic at load:
+# cfm.lua & co, named by a *_by_lua_file in the config, plus the panel ones the
+# daemon wires up). Any other module must load cleanly: a module that raises at
+# load (an OpenResty-only API, say) is BROKEN even though it compiles.
+scripts=" cfm cfm_panel cfm_panel_tunnel $(grep -oE '_by_lua_file[[:space:]]+[^;[:space:]]+' "$R/conf/nginx.conf" | sed -E 's#.*/##; s#\.lua$##' | sort -u | tr '\n' ' ')"
+lua_scripts="$(for x in $scripts; do printf '["%s"]=true,' "$x"; done)"
 mods=""
 for f in "$R"/lib/lua/*.lua; do m="$(basename "$f" .lua)"; mods="$mods\"$m\","; done
 cat >"$R/req/nginx.conf" <<EOF
@@ -98,15 +106,18 @@ http {
                 -- load; for them only "it compiled and its requires resolved"
                 -- matters, so a runtime error after loadfile is reported apart.
                 local out = {}
+                local scripts = { $lua_scripts }
                 for _, m in ipairs({${mods%,}}) do
                     local ok, err = pcall(require, m)
                     if ok then
                         out[#out+1] = "ok " .. m
                     elseif tostring(err):find("module '[^']+' not found") then
                         out[#out+1] = "MISSING " .. m .. ": " .. tostring(err):match("module '[^']+' not found")
-                    else
+                    elseif scripts[m] then
                         local chunk, cerr = loadfile("$R/lib/lua/" .. m .. ".lua")
                         out[#out+1] = (chunk and "script " or "BROKEN ") .. m .. (chunk and "" or (": " .. tostring(cerr)))
+                    else
+                        out[#out+1] = "BROKEN " .. m .. ": " .. tostring(err):gsub("\n.*", "")
                     end
                 end
                 ngx.say(table.concat(out, "\n"))
@@ -136,7 +147,7 @@ fi
 # Known and expected: lua-resty-http's optional mTLS support warns that
 # lua-resty-openssl is absent (same on OpenResty nodes, whose install script
 # does not add it either; CFM uses no upstream client certs).
-grep -hE "module '[^']+' not found|failed to load|attempt to call|\[emerg\]|\[alert\]" \
+grep -hE "module '[^']+' not found|failed to load|error loading module|attempt to call|\[emerg\]|\[alert\]" \
     "$R"/logs/*.log "$R"/req/logs/error.log 2>/dev/null \
     | grep -vE 'resty\.openssl' \
     | grep -vE "$nofile_skip" | sort -u | head -20 >"$R/loaderr" || true
