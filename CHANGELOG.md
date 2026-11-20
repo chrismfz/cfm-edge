@@ -1,0 +1,29 @@
+# Changelog
+
+What changes in the cfm-edge package, for the operator. The package version
+is nginx's plus a build stamp (`versions.env`, `make package`), so entries go
+under `[Unreleased]` and move under the build's date when it ships
+(`YYYY-MM-DD`, UTC, as the rpm Release). Group by **Added / Changed /
+Fixed / Hardened / Security / Removed**.
+
+## [Unreleased]
+
+### Hardened
+- **`cfm-edge.service` runs sandboxed** (ROADMAP.md §2, round 1):
+  - the filesystem is read-only except the paths the edge writes (logs, Site
+    Cache, the body/proxy temp dirs of CFM's config, the ClamAV pending dir,
+    `/run`), and `/home` is not visible;
+  - private `/tmp` and `/dev`, `NoNewPrivileges`, 7 capabilities, only
+    unix/IPv4/IPv6 sockets, no new namespaces, the kernel and cgroup
+    settings read-only.
+
+  `systemd-analyze security` goes from 9.2 UNSAFE to 4.4 (EL8) / 4.5 (EL9)
+  OK. Measured live on virgo (EL8) and rigel (EL9) first: restart, reload,
+  uploads, Site Cache, WAF, sslcollector, panel listeners, IPv4 + IPv6.
+  - **Takes effect at the next restart of the edge**, not at the rpm upgrade
+    (the package never restarts a running edge).
+  - EL8's systemd ignores `ProtectKernelLogs` / `ProtectClock` /
+    `ProtectHostname` with an "Unknown lvalue" line in the journal.
+  - **If CFM's edge config ever writes to a new path**, that path must be
+    added to the unit's `ReadWritePaths=`, or requests that need it fail with
+    "Read-only file system" while the edge looks healthy.

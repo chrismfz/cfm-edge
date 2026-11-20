@@ -59,42 +59,89 @@ and starts an edge.
 
 ## 2. Hardened systemd unit
 
-Mostly free to add, but each line restricts what the edge may touch, so a
-missing write path takes the edge down. Every step needs a canary run with
-a real reload, a log rotation, a certificate refresh (sslcollector) and the
-panel listeners.
+Each line restricts what the edge may touch, and a missing write path does
+not stop the edge from starting: it fails a large upload or response later
+with "Read-only file system" while every health check is green. So every
+step gets a live run on a canary before the unit changes.
 
-Paths CFM's edge writes or binds today:
-- `/var/lib/cfm` (Lua, body/proxy temp, state);
-- `/var/cache/nginx` (Site Cache);
-- `/run/cfm` and `/var/run/cfm_nginx.sock`, `/var/run/sslcollector.sock`
-  (bridge and sslcollector sockets);
-- `/var/log/cfm-edge`;
-- `/run/cfm-edge.pid`.
+### Round 1: done (in `cfm-edge.service`, 2026-11-20)
 
-Measure the list on the canary rather than trust it.
+Measured live on virgo (CloudLinux 8, systemd 239) and rigel (CloudLinux 9,
+systemd 252), as a drop-in (`/etc/systemd/system/cfm-edge.service.d/
+zz-hardening.conf`) before it went into the unit. `systemd-analyze security`:
+**9.2 UNSAFE → 4.4 (EL8) / 4.5 (EL9) OK**.
 
-First step (the one discussed):
-- [ ] `NoNewPrivileges=yes`
-- [ ] `ProtectSystem=full` (`/usr`, `/boot`, `/etc` read-only)
-- [ ] `ProtectHome=yes`. This one matters most on cPanel servers: the edge
-  has no reason to see `/home`, where every customer's site lives.
-- [ ] `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`
+- [x] `ProtectSystem=strict` + `ReadWritePaths=` (the measured list below)
+- [x] `ProtectHome=yes` (on cPanel, `/home` is every customer's site)
+- [x] `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`
+- [x] `CapabilityBoundingSet=` 7 capabilities: `CAP_NET_BIND_SERVICE
+  CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_KILL CAP_SYS_RESOURCE`
+- [x] `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `RestrictNamespaces`,
+  `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`
+- [x] `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`
+- [x] `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname`: EL8's systemd
+  239 logs "Unknown lvalue" and ignores them; they apply on EL9/EL10
+  (measured on rigel).
 
-Later, each measured on its own:
-- [ ] `ProtectSystem=strict` with explicit `ReadWritePaths=` (the list
-  above).
-- [ ] `PrivateDevices=yes`, `ProtectKernelTunables=yes`,
-  `ProtectKernelModules=yes`, `ProtectControlGroups=yes`.
-- [ ] `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
-  CAP_CHOWN CAP_DAC_OVERRIDE`, then drop whichever turns out unneeded.
-- [ ] `SystemCallFilter=@system-service` (and `SystemCallArchitectures=native`).
+What the live run checked: restart and reload; IPv4 and IPv6; a 5 MB POST
+(written to `client_body_temp`); Site Cache HIT/MISS and new cache files;
+WAF challenge (XSS) and block (traversal); the sslcollector load
+(4070 / 682 certs); the panel listeners; the workers run as `cfm` with
+`NoNewPrivs=1`; `/etc` and `/usr` read-only and `/home` empty inside the
+namespace; 0 "Read-only / Permission denied" in the error log.
+
+**The write paths, measured** (not the config's compiled-in defaults):
+- `/var/log/cfm-edge` (logs);
+- `/var/cache/nginx` (Site Cache, `proxy_cache_path`);
+- `/var/lib/cfm-edge` (compiled-in temp paths);
+- `/var/lib/cfm/nginx` (`client_body_temp_path` / `proxy_temp_path` in
+  CFM's config; first missed, see below);
+- `/var/lib/cfm/scanner` (ClamAV inline scan, `cfm_clamav.lua` pending file);
+- `/run` (pid + lock).
+
+Unix sockets (bridge, sslcollector, ingest, clamd) need no write path.
+
+**How to measure** (repeat for any new write path or directive):
+1. List what the config and Lua write: `grep -nE 'temp_path|cache_path|
+   access_log|error_log|pid' nginx.conf`, `cfm-edge -V` (compiled-in paths),
+   `io.open(..., "w")` in `/var/lib/cfm/lua`.
+2. Config test inside the sandbox, the live edge untouched:
+   `systemd-run --wait --pipe -p <each directive> /usr/sbin/cfm-edge -t`.
+   EL8's 239 refuses some directives transiently even when a unit file
+   accepts them; test those on EL9.
+3. Take the edge **out of the path first** (`cfm edge off`, `cfm edge panel
+   off`; on an older cfm `cfm dnat off`, `cfm dnat cpanel off`): a restart
+   closes the ports at once and drains for up to 90 s (§1). Check that the
+   off took effect before restarting (virgo, 2026-11-20: the command did not
+   exist, DNAT stayed on, and new connections were refused for 30 s).
+4. Drop-in, `daemon-reload`, restart (on failure: remove it, restart).
+5. As the `cfm` user inside the worker's namespace, write to every path:
+   `nsenter -t <worker> -m -- setpriv --reuid=cfm --regid=cfm --init-groups
+   touch <dir>/.rw`. This catches what the config test cannot: virgo ran
+   3 minutes with the temp dirs read-only, and one large proxied response
+   failed with EROFS before this check found it.
+6. Edge back on, then live traffic, a reload and the error log.
+
+### Next
+
+- [ ] **Narrow `/run`**: move the pid and lock to `/run/cfm-edge/`
+  (`RuntimeDirectory=cfm-edge`, `--pid-path`/`--lock-path` in the spec, CFM's
+  `pid` line and `PIDFile=`), then `ReadWritePaths=` names only that.
+- [ ] **Round 2**, each measured on its own as above:
+  - `SystemCallFilter=@system-service` + `SystemCallArchitectures=native`,
+    first with `SystemCallLog=` / `SystemCallErrorNumber=EPERM` on the
+    canary so a missing call shows in the log instead of killing a worker;
+  - `ProtectProc=invisible` (EL9+; check that no Lua reads `/proc` of
+    another process);
+  - `UMask=0027`.
+- [ ] Drop capabilities that turn out unneeded (`CAP_DAC_OVERRIDE` if every
+  file the master opens is root's; `CAP_NET_BIND_SERVICE` while every
+  listener is above 1024).
 - [ ] `MemoryDenyWriteExecute=yes` **only if LuaJIT's JIT is off**. The JIT
   writes machine code at run time, which is exactly what this forbids.
   Measure whether CFM's Lua needs the JIT before choosing one or the other.
-
-`systemd-analyze security cfm-edge.service` gives the score before and
-after each step.
+- [ ] Once the rpm carries round 1, remove the test drop-in
+  `zz-hardening.conf` from virgo and rigel (it duplicates the unit).
 
 ## 3. Compile hardening
 
@@ -108,6 +155,12 @@ already include:
 
 - [ ] Run `checksec` (or `readelf`/`hardening-check`) on `/usr/sbin/cfm-edge`,
   `libluajit-5.1.so` and `cjson.so`, and record the result here.
+  - First read, `/usr/sbin/cfm-edge` 1.31.9-20261120 on rigel (`readelf`):
+    PIE (`DYN`, `FLAGS_1 NOW PIE`), full RELRO (`GNU_RELRO` + `BIND_NOW`),
+    non-executable stack (`GNU_STACK RW`), stack protector
+    (`__stack_chk_fail`), FORTIFY in use (4 `__*_chk` symbols). Not yet
+    checked: `-fcf-protection` / `-fstack-clash-protection` (need
+    `annobin`/`annocheck`), LuaJIT and `cjson.so`.
 - [ ] **OpenSSL is built by its own `Configure`** (static, through
   `--with-openssl`), so it does not necessarily get the same flags. Measure
   it, and if needed pass them through `--with-openssl-opt`.

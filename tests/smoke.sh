@@ -62,6 +62,15 @@ check "LimitNOFILE=262144 (as openresty.service)" grep -qx 'LimitNOFILE=262144' 
 check "KillSignal=SIGQUIT" grep -qx 'KillSignal=SIGQUIT' "$U"
 check "PIDFile=/run/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge.pid' "$U"
 check "no Conflicts= with the live edge" bash -c "! grep -q '^Conflicts=' '$U'"
+# Hardening (ROADMAP.md §2): the write paths the edge needs, or a large
+# upload/response fails with EROFS at run time while the edge looks healthy.
+check "ProtectSystem=strict" grep -qx 'ProtectSystem=strict' "$U"
+for p in /var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner /run; do
+    check "ReadWritePaths has $p" bash -c "grep '^ReadWritePaths=' '$U' | tr ' =' '\n\n' | grep -qx '$p'"
+done
+check "ProtectHome=yes" grep -qx 'ProtectHome=yes' "$U"
+check "NoNewPrivileges=yes" grep -qx 'NoNewPrivileges=yes' "$U"
+check "no MemoryDenyWriteExecute (LuaJIT JIT)" bash -c "! grep -q '^MemoryDenyWriteExecute' '$U'"
 
 echo "== logrotate"
 L=/etc/logrotate.d/cfm-edge
