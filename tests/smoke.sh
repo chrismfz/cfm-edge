@@ -63,6 +63,16 @@ check "KillSignal=SIGQUIT" grep -qx 'KillSignal=SIGQUIT' "$U"
 check "PIDFile=/run/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge.pid' "$U"
 check "no Conflicts= with the live edge" bash -c "! grep -q '^Conflicts=' '$U'"
 
+echo "== logrotate"
+L=/etc/logrotate.d/cfm-edge
+check "logrotate config installed" test -f "$L"
+# CFM's hourly pass runs this file so the cap fires between daily runs.
+check "maxsize 2G (size cap, as CFM's OpenResty logs)" grep -qE '^\s*maxsize\s+2G\s*$' "$L"
+check "rotate 7" grep -qE '^\s*rotate\s+7\s*$' "$L"
+if command -v logrotate >/dev/null 2>&1; then
+    check "logrotate -d parses it" logrotate -d "$L"
+fi
+
 echo "== package placeholder config"
 check "cfm-edge -t on /etc/cfm-edge/nginx.conf" "$BIN" -t -q
 

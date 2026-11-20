@@ -1,9 +1,18 @@
 # Package-owned rotation of the package's own log dir. CFM's
 # check_logrotate_coverage.sh must list /var/log/cfm-edge/ as vendor-rotated
 # (never a second declaration of these files: logrotate aborts on duplicates).
+#
+# A busy edge writes tens of GB a day. `maxsize` caps a log between daily
+# runs, but only fires when logrotate runs: CFM's hourly pass
+# (/etc/cron.hourly/cfm-logrotate) runs this file too, as it does CFM's own
+# config for the OpenResty logs (the same 2G cap, 7 generations).
+# delaycompress stays: the edge reopens its logs on USR1 (asynchronously), so
+# compressing the just-rotated file at once could race the workers' last
+# writes to it. The cost is one uncompressed generation of at most 2G.
 /var/log/cfm-edge/*.log {
     daily
-    rotate 14
+    maxsize 2G
+    rotate 7
     missingok
     notifempty
     compress
