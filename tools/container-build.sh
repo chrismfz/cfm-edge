@@ -82,7 +82,7 @@ smoke)
     ls "$OUT"/cfm-edge-[0-9]*.x86_64.rpm >/dev/null 2>&1 || { echo "no rpm in $OUT; run: $0 $EL build" >&2; exit 1; }
     # shellcheck disable=SC2016
     "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro${Z}" "$IMAGE" bash -c "$prologue"'
-        dnf -q -y install --allowerasing curl procps-ng openssl binutils /rpms/cfm-edge-[0-9]*.x86_64.rpm >/dev/null
+        dnf -q -y install --allowerasing curl procps-ng openssl binutils logrotate /rpms/cfm-edge-[0-9]*.x86_64.rpm >/dev/null
         bash /src/tests/smoke.sh
     '
     ;;
