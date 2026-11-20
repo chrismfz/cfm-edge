@@ -69,8 +69,22 @@ check "logrotate config installed" test -f "$L"
 # CFM's hourly pass runs this file so the cap fires between daily runs.
 check "maxsize 2G (size cap, as CFM's OpenResty logs)" grep -qE '^\s*maxsize\s+2G\s*$' "$L"
 check "rotate 7" grep -qE '^\s*rotate\s+7\s*$' "$L"
+check "dateext with a to-the-second dateformat" grep -qE '^\s*dateformat\s+-%Y%m%d-%H%M%S\s*$' "$L"
 if command -v logrotate >/dev/null 2>&1; then
     check "logrotate -d parses it" logrotate -d "$L"
+    # Two forced rotations a second apart, with ONLY this file (as CFM's
+    # hourly pass runs it): both succeed, and name their generations by
+    # date, never .1 (which the distro's daily run would not count).
+    lr_state="$P/logrotate.state"
+    mkdir -p /var/log/cfm-edge
+    echo one > /var/log/cfm-edge/smoke.log
+    check "forced rotation 1" logrotate -f -s "$lr_state" "$L"
+    sleep 1
+    echo two > /var/log/cfm-edge/smoke.log
+    check "forced rotation 2 in the same day (no name clash)" logrotate -f -s "$lr_state" "$L"
+    check "generations are date-named, not .1" bash -c \
+        "ls /var/log/cfm-edge/ | grep -qE '^smoke\.log-[0-9]{8}-[0-9]{6}' && ! ls /var/log/cfm-edge/ | grep -qE '^smoke\.log\.[0-9]'"
+    rm -f /var/log/cfm-edge/smoke.log*
 fi
 
 echo "== package placeholder config"
