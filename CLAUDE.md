@@ -55,6 +55,20 @@ a canary**.
   edges belongs to CFM's install script. Nor does an rpm upgrade restart it
   (`%systemd_postun`, not `_with_restart`): a restart drops every connection,
   and a new binary that refuses the live config would leave the edge down.
+- **The unit's sandbox is measured, never assumed** (ROADMAP.md §2). A new
+  hardening directive, or a new write path in CFM's edge config, goes
+  first as a drop-in on a canary, run by the recipe in ROADMAP.md §2:
+  - a sandboxed `-t`;
+  - the edge **out of the path** before the restart, after checking that the
+    off took effect;
+  - a write test as `cfm` inside the worker's namespace;
+  - a reload and live traffic.
+
+  Only then does it go into `cfm-edge.service`. A missing `ReadWritePaths=`
+  entry does not stop the edge: it fails a large upload with "Read-only file
+  system" later. `MemoryDenyWriteExecute` stays out while LuaJIT's JIT is on.
+  Changes go into `CHANGELOG.md` `[Unreleased]` (a **Hardened** section for
+  these).
 - **A test that cannot run must fail.** `cfm-conf.sh` fails when CFM's
   checkout is missing. Its only skips are written-down environment limits:
   the resty.openssl mTLS WARN (also present on OpenResty nodes), and the
