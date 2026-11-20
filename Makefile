@@ -74,8 +74,8 @@ RPM_DEFINES := \
   --define "edge_changelog_date $(CHANGELOG_DATE)" \
   --define "dist %{nil}"
 
-# A bare `make` fetches + verifies the sources, as it always did; `make help` lists the rest.
-.DEFAULT_GOAL := sources
+# A bare `make` shows the help (it used to fetch the sources: `make sources`).
+.DEFAULT_GOAL := help
 
 .PHONY: help sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean
 
