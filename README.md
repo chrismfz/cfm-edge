@@ -96,6 +96,7 @@ and verifies sources and drives those containers:
 On a new VM, `make doctor` checks all of this and names what is missing.
 
 ```sh
+make help               # every target, one line each
 make doctor             # does this host have what a build needs?
 make package            # THE rpm: built in AlmaLinux 8 -> dist/el8/cfm-edge-<nginx>-<YYYYMMDD.HHMMSS>.x86_64.rpm
 make test-all           # that rpm: smoke + cfm-conf on EL8, EL9, EL10

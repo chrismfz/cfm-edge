@@ -6,6 +6,7 @@
 # and EL10. No dist tag, and Release is the build time (UTC):
 # cfm-edge-1.31.9-20261119.182233.x86_64.rpm, not .el8 on an EL10 box.
 #
+#   make help         every target, one line each
 #   make doctor       does this host have what a build needs?
 #   make package      THE shipped rpm: built in AlmaLinux 8 -> dist/el8/
 #   make test-all     smoke + cfm-conf of that rpm on EL8, EL9 and EL10
@@ -73,38 +74,51 @@ RPM_DEFINES := \
   --define "edge_changelog_date $(CHANGELOG_DATE)" \
   --define "dist %{nil}"
 
-.PHONY: sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean
+# A bare `make` fetches + verifies the sources, as it always did; `make help` lists the rest.
+.DEFAULT_GOAL := sources
 
-sources:
+.PHONY: help sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean
+
+
+# `make help`: every target with its `## description`, as cfm's Makefile does.
+help: ## Show this help
+	@echo "cfm-edge targets:"
+	@grep -E '^[a-zA-Z0-9 _-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | \
+	  awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-40s\033[0m %s\n", $$1, $$2}'
+	@echo
+	@echo "Release: make update && make package test-all && make sync"
+	@echo "         (then, as root on repo.nixpal.com: /root/repos-update.sh --rpm-only)"
+
+sources: ## Fetch + verify every pinned input into SOURCES/ (sha256, PGP, git pins)
 	tools/fetch-sources.sh SOURCES
 
 # rpmbuild's SOURCES: the verified inputs, the packaging files, and each
 # patches/<component>/<file> as <component>-<file> (the spec's PatchNNN names).
-stage: sources
+stage: sources ## Lay out an rpmbuild tree in build/ (used by rpm / srpm)
 	rm -rf $(TOPDIR) && mkdir -p $(TOPDIR)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 	cp -p SOURCES/*.tar.gz $(TOPDIR)/SOURCES/
 	cp -p packaging/rpm/cfm-edge.service packaging/rpm/cfm-edge.logrotate packaging/rpm/nginx.conf $(TOPDIR)/SOURCES/
 	for p in patches/*/*.patch; do cp -p "$$p" "$(TOPDIR)/SOURCES/$$(basename $$(dirname $$p))-$$(basename $$p)"; done
 	cp -p packaging/rpm/cfm-edge.spec $(TOPDIR)/SPECS/
 
-rpm: stage
+rpm: stage ## Build the rpm on THIS host (an EL with rpm-build)
 	rpmbuild -ba $(RPM_DEFINES) $(TOPDIR)/SPECS/cfm-edge.spec
 	mkdir -p dist && find $(TOPDIR)/RPMS $(TOPDIR)/SRPMS -name '*.rpm' -exec cp -p {} dist/ \;
 	@ls -1 dist/
 
-srpm: stage
+srpm: stage ## Build the source rpm on this host
 	rpmbuild -bs $(RPM_DEFINES) $(TOPDIR)/SPECS/cfm-edge.spec
 
-rpm-el8 rpm-el9 rpm-el10: sources
+rpm-el8 rpm-el9 rpm-el10: sources ## Build inside an AlmaLinux 8 / 9 / 10 container
 	tools/container-build.sh $(subst rpm-el,,$@) build
 
-rpms: rpm-el8 rpm-el9 rpm-el10
+rpms: rpm-el8 rpm-el9 rpm-el10 ## Build on all three (diagnostics; the shipped rpm is el8)
 
-package: rpm-el8
+package: rpm-el8 ## THE shipped rpm: built on EL8 -> dist/el8/
 
 # The el8-built rpm, installed into each image (IMAGE= overrides the image,
 # not which rpm: tools/container-build.sh 8 reads dist/el8).
-test-all:
+test-all: ## Smoke + CFM config tests of that rpm on EL8, EL9 and EL10 (stamps .tested)
 	rm -f $(PKG_DIR)/.tested
 	for img in 8 9 10; do \
 	  IMAGE=quay.io/almalinuxorg/almalinux:$$img tools/container-build.sh 8 smoke && \
@@ -117,7 +131,7 @@ test-all:
 # What a build host needs (a new test VM: run this first). Everything that
 # compiles (gcc, rpm-build, perl, pcre2/zlib headers) lives in the AlmaLinux
 # containers; the host only fetches + verifies sources and drives containers.
-doctor:
+doctor: ## Does this host have what a build needs?
 	@miss=0; \
 	command -v $(ENGINE) >/dev/null && echo "✓ container engine: $(ENGINE)" \
 	  || { echo "✗ container engine $(ENGINE): install podman or docker (or set ENGINE=)"; miss=1; }; \
@@ -140,12 +154,12 @@ doctor:
 # Pins: `check` only reports; `update` rewrites versions.env (exit 3 = bumped,
 # 4 = an nginx SECURITY fix: both are success here). Review
 # `git diff versions.env`, then build, test and sync.
-check:
+check: ## Report which pins are behind upstream (changes nothing)
 	@python3 tools/check-deps.py; rc=$$?; \
 	case $$rc in 0) echo "all pins current";; 3) echo "behind: run make update";; \
 	  4) echo "SECURITY: nginx security fix available: run make update";; *) exit $$rc;; esac
 
-update:
+update: ## Rewrite versions.env to the newest pins (then review the diff)
 	@python3 tools/check-deps.py --bump; rc=$$?; \
 	case $$rc in 0) echo "all pins current, nothing changed";; \
 	  3|4) echo; if git diff --quiet -- versions.env; then \
@@ -158,7 +172,7 @@ update:
 # pass test-all, and a filename the repo already has (a build stamp reused
 # through BUILD_STAMP= would silently change a published package). FORCE=1
 # overrides both, knowingly.
-sync:
+sync: ## Upload the tested rpm to repo.nixpal.com (refuses an untested one)
 	@set -euo pipefail; \
 	RPM_FILE="$$(ls -1 $(PKG_DIR)/cfm-edge-[0-9]*.x86_64.rpm 2>/dev/null | head -n1 || true)"; \
 	[ -n "$$RPM_FILE" ] || { echo "❌ No rpm in $(PKG_DIR): run make package test-all"; exit 1; }; \
@@ -179,17 +193,17 @@ sync:
 	rsync $(RSYNC_FLAGS) -e "$(SSH_CMD)" $(PKG_DIR)/cfm-edge-checksums.txt "$(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)/"; \
 	echo "✅ Uploaded. To publish: on $(REMOTE_HOST) run (as root) /root/repos-update.sh --rpm-only"
 
-smoke-el8 smoke-el9 smoke-el10:
+smoke-el8 smoke-el9 smoke-el10: ## Smoke the rpm built for that EL (dist/elN) in a clean container
 	tools/container-build.sh $(subst smoke-el,,$@) smoke
 
 # CFM's real edge config + Lua against the built rpm (CFM_DIR=../cfm by default)
-cfm-conf-el8 cfm-conf-el9 cfm-conf-el10:
+cfm-conf-el8 cfm-conf-el9 cfm-conf-el10: ## CFM's real edge config + Lua on that EL's rpm (CFM_DIR=../cfm)
 	tools/container-build.sh $(subst cfm-conf-el,,$@) cfm-conf
 
-lint:
+lint: ## bash -n + shellcheck + py_compile
 	for f in tools/*.sh tests/*.sh; do bash -n "$$f"; done
 	shellcheck -S warning tools/*.sh tests/*.sh
 	python3 -m py_compile tools/*.py
 
-clean:
+clean: ## Remove build/ and dist/
 	rm -rf build dist
