@@ -25,6 +25,10 @@ and starts an edge.
     has not finished: large uploads, websockets, cPanel/webmail sessions
     that pass through the edge. `install-edge.sh` stops and starts on
     every switch, so that is where it would show.
+- [x] **An upgrade applies itself without refusing connections**:
+  `upgrade-restart.sh` from `%posttrans` (CHANGELOG, CLAUDE.md). It restarts
+  a running edge out of CFM's DNAT, after `-t`. `tests/upgrade-restart_test.sh`
+  pins every branch.
 - [ ] **`worker_shutdown_timeout` in the config `install-edge.sh` renders**
   (cfm repo), e.g. 10-15s. On a stop, nginx closes its listening sockets at
   once and waits for open connections. CFM's config proxies streams with

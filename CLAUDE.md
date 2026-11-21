@@ -52,9 +52,17 @@ a canary**.
 - **The package never takes the live edge's ports.** The placeholder
   `nginx.conf` listens on 127.0.0.1:9099 only. The unit has no `Conflicts=`
   (a stray start would stop openresty or angie) and is not enabled. Switching
-  edges belongs to CFM's install script. Nor does an rpm upgrade restart it
-  (`%systemd_postun`, not `_with_restart`): a restart drops every connection,
-  and a new binary that refuses the live config would leave the edge down.
+  edges belongs to CFM's install script. An rpm upgrade never restarts it
+  blindly (`%systemd_postun`, not `_with_restart`): a plain restart of an
+  edge in the path refuses every new connection while it drains, and a new
+  binary that refuses the live config would leave the edge down. Instead
+  `%posttrans` runs `upgrade-restart.sh`, which restarts only a RUNNING edge,
+  only after the new binary passes `-t`, and takes it out of CFM's DNAT first
+  when it is in the path (`cfm edge off` → restart → check → `cfm edge on`;
+  a failed restart leaves the DNAT off, the origin serving).
+  `tests/upgrade-restart_test.sh` (`make lint`) pins every branch; keep it
+  passing when the script changes. `/etc/cfm-edge/no-upgrade-restart` opts a
+  node out.
 - **The unit's sandbox is measured, never assumed** (ROADMAP.md §2). A new
   hardening directive, or a new write path in CFM's edge config, goes
   first as a drop-in on a canary, run by the recipe in ROADMAP.md §2:
