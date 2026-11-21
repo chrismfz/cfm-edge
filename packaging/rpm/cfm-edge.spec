@@ -54,6 +54,7 @@ Source10:       lua-resty-string-%{lua_resty_string_version}.tar.gz
 Source20:       cfm-edge.service
 Source21:       cfm-edge.logrotate
 Source22:       nginx.conf
+Source23:       cfm-edge-upgrade-restart.sh
 
 # Our own patches, one change each (patches/<component>/ in the repo).
 Patch1:         nginx-0001-server-name-cfm-edge.patch
@@ -229,6 +230,7 @@ install -d -m 0755 %{buildroot}%{edge_logdir}
 install -d -m 0755 %{buildroot}%{edge_statedir}
 install -D -p -m 0644 %{SOURCE20} %{buildroot}%{_unitdir}/cfm-edge.service
 install -D -p -m 0644 %{SOURCE21} %{buildroot}%{_sysconfdir}/logrotate.d/cfm-edge
+install -D -p -m 0755 %{SOURCE23} %{buildroot}%{edge_libdir}/upgrade-restart.sh
 
 %check
 bin=%{buildroot}%{_sbindir}/cfm-edge
@@ -251,12 +253,21 @@ if readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "luajit-stage"; then echo 
 %preun
 %systemd_preun cfm-edge.service
 
-# No restart on upgrade: this is the in-path edge. A stop+start drops every
-# connection, and if the new binary's -t refuses the live config the edge
-# stays DOWN. The new binary takes over only when the operator or CFM's
-# install script runs -t and restarts (or USR2-upgrades) it, after a canary.
+# No blind restart on upgrade: this is the in-path edge. A plain stop+start
+# refuses every new connection while it drains, and if the new binary's -t
+# refuses the live config the edge stays DOWN. So the unit is not restarted
+# here (systemd_postun, not its with_restart form); posttrans runs
+# upgrade-restart.sh instead, which restarts a RUNNING edge only after the new
+# binary passes -t, and takes it out of the path first when CFM's DNAT is on.
 %postun
 %systemd_postun cfm-edge.service
+
+# After the whole transaction (cfm, if upgraded with it, is in place). Never
+# fails the transaction; does nothing for an edge that is not running.
+%posttrans
+if [ -x %{edge_libdir}/upgrade-restart.sh ]; then
+    %{edge_libdir}/upgrade-restart.sh || :
+fi
 
 %files
 %license nginx-%{nginx_version}/LICENSE

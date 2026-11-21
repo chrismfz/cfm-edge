@@ -72,6 +72,19 @@ check "ProtectHome=yes" grep -qx 'ProtectHome=yes' "$U"
 check "NoNewPrivileges=yes" grep -qx 'NoNewPrivileges=yes' "$U"
 check "no MemoryDenyWriteExecute (LuaJIT JIT)" bash -c "! grep -q '^MemoryDenyWriteExecute' '$U'"
 
+echo "== post-upgrade restart"
+R=/usr/lib/cfm-edge/upgrade-restart.sh
+check "upgrade-restart.sh installed, executable" test -x "$R"
+check "upgrade-restart.sh parses as sh" sh -n "$R"
+# The rpm runs it after the transaction, and never restarts in postun itself.
+if command -v rpm >/dev/null 2>&1 && rpm -q cfm-edge >/dev/null 2>&1; then
+    check "posttrans runs upgrade-restart.sh" bash -c "rpm -q --scripts cfm-edge | sed -n '/^posttrans/,/^[a-z]* scriptlet/p' | grep -q '$R'"
+    check "no restart-on-upgrade in postun" bash -c "! rpm -q --scripts cfm-edge | sed -n '/^postun/,/^[a-z]* scriptlet/p' | grep -qE 'try-restart|restart |mark-restart'"
+fi
+# Not running here (the smoke test runs its own instance, not the unit):
+# the script must do nothing and exit 0.
+check "upgrade-restart.sh is a no-op for a stopped edge (no output, exit 0)" bash -c "systemctl is-active --quiet cfm-edge 2>/dev/null || [ -z \"\$('$R' 2>&1)\" ]"
+
 echo "== logrotate"
 L=/etc/logrotate.d/cfm-edge
 check "logrotate config installed" test -f "$L"

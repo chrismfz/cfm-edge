@@ -1,0 +1,217 @@
+#!/bin/bash
+# upgrade-restart_test.sh — the rpm's post-upgrade restart, every branch, with
+# stubs for systemctl / systemd-run / cfm / cfm-edge / ss / curl (no root, no
+# container). Run by `make lint`. It pins:
+#   - an edge in the path is never restarted unless the DNAT reads OFF;
+#   - a stopped edge is never started;
+#   - a config the new binary refuses (in the unit's sandbox too) never
+#     restarts it;
+#   - another engine's DNAT is never touched;
+#   - the web DNAT comes back with the live priority and ports;
+#   - a failed restart, or one that never serves, leaves the DNAT off.
+# The script never reaches the host's cfm or systemctl: CFM_BIN and the PATH
+# point at stubs only (a test run as root on a CFM node must not move its DNAT).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+SCRIPT=packaging/rpm/cfm-edge-upgrade-restart.sh
+[ -f "$SCRIPT" ] || { echo "FAIL: $SCRIPT missing" >&2; exit 1; }
+sh -n "$SCRIPT" || { echo "FAIL: $SCRIPT does not parse (sh -n)" >&2; exit 1; }
+if command -v dash >/dev/null 2>&1; then dash -n "$SCRIPT" || { echo "FAIL: $SCRIPT is not POSIX (dash -n)" >&2; exit 1; }; fi
+
+W="$(mktemp -d)"
+trap 'rm -rf "$W"' EXIT
+mkdir -p "$W/bin"
+
+# Per-scenario state in $STUB_STATE: unit (active|inactive), web / panel
+# (ON|OFF|UNKNOWN), engine (the Engine: text), and knobs (files):
+#   cfgbad      cfm-edge -t fails everywhere
+#   sandboxbad  -t fails only inside systemd-run (a sandbox the unit adds)
+#   nosdrun     systemd-run unusable (no bus): plain -t is used
+#   oldcfm      `cfm edge` is an unknown command
+#   offfail     `cfm edge off` fails and the DNAT reads UNKNOWN after it
+#   offstuck    `cfm edge off` / `panel off` do nothing
+#   panelstuck  only `cfm edge panel off` does nothing
+#   startfail   restart/start leave the unit down
+#   notserving  the unit is active but does not listen / answer
+#   nolisten    active and answers, but nothing listens on :9043 as cfm-edge
+#   noanswer    listens, but https://127.0.0.1:9043/ gets no answer (000)
+#   offrc       `cfm edge off` turns it OFF but exits non-zero
+#   optout      the opt-out file exists
+#   nocfm       CFM_BIN points at nothing
+cat >"$W/bin/systemctl" <<'EOF'
+#!/bin/sh
+S="$STUB_STATE"; echo "systemctl $*" >>"$S/calls"
+case "$1" in
+  is-active) [ "$(cat "$S/unit")" = active ] ;;
+  daemon-reload) : ;;
+  cat) printf '[Service]\nProtectSystem=strict\nReadWritePaths=/var/log/cfm-edge /run\nNoNewPrivileges=yes\nProtectClock=yes\n' ;;
+  restart|start) if [ -e "$S/startfail" ]; then echo inactive >"$S/unit"; exit 1; fi
+                 # The restart must never happen while cfm-edge is in the path.
+                 if [ "$(cat "$S/enginename")" = cfm-edge ] && ! { grep -qx OFF "$S/web" && grep -qx OFF "$S/panel"; }; then
+                   echo "RESTART-WHILE-IN-PATH" >>"$S/calls"; fi
+                 echo active >"$S/unit" ;;
+esac
+EOF
+cat >"$W/bin/systemd-run" <<'EOF'
+#!/bin/sh
+S="$STUB_STATE"; echo "systemd-run $*" >>"$S/calls"
+[ -e "$S/nosdrun" ] && { echo "Failed to connect to bus" >&2; exit 1; }
+case "$*" in
+  *ProtectClock*/bin/true) exit 1 ;;   # as EL8: refused transiently
+  */bin/true) exit 0 ;;
+  *" -t -q") [ -e "$S/sandboxbad" ] && { echo "nginx: [emerg] open() failed (30: Read-only file system)" >&2; exit 1; }
+             [ -e "$S/cfgbad" ] && exit 1; exit 0 ;;
+esac
+exit 0
+EOF
+cat >"$W/bin/cfm" <<'EOF'
+#!/bin/sh
+S="$STUB_STATE"; echo "cfm $*" >>"$S/calls"
+[ -e "$S/oldcfm" ] && { echo "unknown command: edge"; exit 2; }
+w="$(cat "$S/web")"; p="$(cat "$S/panel")"
+case "$*" in
+  "edge")
+    echo "Edge"; echo "  Engine:      $(cat "$S/engine")"
+    case "$w" in
+      ON) echo "  Web DNAT:    ON   priority -101, tcp/80 -> :9080, tcp+udp/443 -> :9043" ;;
+      OFF) echo "  Web DNAT:    OFF  (the origin serves 80/443 directly)" ;;
+      *) echo "  Web DNAT:    UNKNOWN (nft: resource busy, ON maybe)"; rc=1 ;;
+    esac
+    case "$p" in ON) echo "  Panel DNAT:  ON   priority -101, mode auto" ;; OFF) echo "  Panel DNAT:  OFF" ;; *) echo "  Panel DNAT:  UNKNOWN"; rc=1 ;; esac
+    exit "${rc:-0}" ;;
+  "edge off") [ -e "$S/offfail" ] && { echo UNKNOWN >"$S/web"; exit 1; }
+              [ -e "$S/offrc" ] && { echo OFF >"$S/web"; exit 1; }
+              [ -e "$S/offstuck" ] || echo OFF >"$S/web" ;;
+  "edge on"*) echo ON >"$S/web" ;;
+  "edge panel off") [ -e "$S/offstuck" ] || [ -e "$S/panelstuck" ] || echo OFF >"$S/panel" ;;
+  "edge panel on") echo ON >"$S/panel" ;;
+esac
+EOF
+cat >"$W/bin/cfm-edge" <<'EOF'
+#!/bin/sh
+echo "cfm-edge $*" >>"$STUB_STATE/calls"
+[ -e "$STUB_STATE/cfgbad" ] && { echo "nginx: [emerg] unknown directive" >&2; exit 1; }
+exit 0
+EOF
+cat >"$W/bin/ss" <<'EOF'
+#!/bin/sh
+[ "$(cat "$STUB_STATE/unit")" = active ] && [ ! -e "$STUB_STATE/notserving" ] && [ ! -e "$STUB_STATE/nolisten" ] && echo 'LISTEN 0 511 0.0.0.0:9043 0.0.0.0:* users:(("cfm-edge",pid=1,fd=12))'
+exit 0
+EOF
+cat >"$W/bin/curl" <<'EOF'
+#!/bin/sh
+echo "curl $*" >>"$STUB_STATE/calls"
+if [ "$(cat "$STUB_STATE/unit")" = active ] && [ ! -e "$STUB_STATE/notserving" ] && [ ! -e "$STUB_STATE/noanswer" ]; then printf 200; else printf 000; fi
+EOF
+printf '#!/bin/sh\nexit 0\n' >"$W/bin/logger"
+printf '#!/bin/sh\nexit 0\n' >"$W/bin/sleep"
+chmod +x "$W/bin/"*
+
+n=0
+fail() { echo "FAIL: $*"; echo "--- output:"; echo "$OUT"; echo "--- calls:"; echo "$CALLS"; exit 1; }
+# run NAME UNIT WEB PANEL ENGINE [knob...]   (ENGINE: cfm-edge | openresty | ambiguous)
+run() {
+  CURRENT="$1"; local unit="$2" web="$3" panel="$4" engine="$5"; shift 5
+  n=$((n + 1)); S="$W/s$n"; mkdir -p "$S"
+  echo "$unit" >"$S/unit"; echo "$web" >"$S/web"; echo "$panel" >"$S/panel"; : >"$S/calls"
+  echo "$engine" >"$S/enginename"
+  case "$engine" in
+    ambiguous) echo "WARNING: more than one of angie, openresty, cfm-edge is active" >"$S/engine" ;;
+    *) echo "$engine (running)" >"$S/engine" ;;
+  esac
+  local cfmbin="$W/bin/cfm" k
+  for k in "$@"; do : >"$S/$k"; if [ "$k" = nocfm ]; then cfmbin="$W/does-not-exist/cfm"; fi; done
+  set +e
+  OUT="$(env -i PATH="$W/bin:/usr/bin:/bin" STUB_STATE="$S" CFM_EDGE_BIN="$W/bin/cfm-edge" CFM_BIN="$cfmbin" \
+         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 sh "$SCRIPT" 2>&1)"
+  RC=$?
+  set -e
+  CALLS="$(cat "$S/calls")"
+  [ "$RC" = 0 ] || fail "$CURRENT: exit $RC (must always be 0, never fail the rpm transaction)"
+  if grep -q RESTART-WHILE-IN-PATH <<<"$CALLS"; then fail "$CURRENT: restarted while the DNAT was not OFF"; fi
+}
+has()   { grep -qF -- "$1" <<<"$CALLS" || fail "$CURRENT: expected call: $1"; }
+hasnt() { if grep -qF -- "$1" <<<"$CALLS"; then fail "$CURRENT: unexpected call: $1"; fi; }
+state() { [ "$(cat "$S/$1")" = "$2" ] || fail "$CURRENT: $1 is $(cat "$S/$1"), want $2"; }
+says()  { grep -qF -- "$1" <<<"$OUT" || fail "$CURRENT: expected output: $1"; }
+order() { # the first call A happens before the first call B
+  local a b; a="$(grep -nF -- "$1" <<<"$CALLS" | head -1 | cut -d: -f1)"; b="$(grep -nF -- "$2" <<<"$CALLS" | head -1 | cut -d: -f1)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || fail "$CURRENT: '$1' must come before '$2'"; }
+lastorder() { # the last call A happens after the last call B
+  local a b; a="$(grep -nF -- "$1" <<<"$CALLS" | tail -1 | cut -d: -f1)"; b="$(grep -nF -- "$2" <<<"$CALLS" | tail -1 | cut -d: -f1)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -gt "$b" ] || fail "$CURRENT: the last '$1' must come after the last '$2'"; }
+
+run "not running" inactive ON ON cfm-edge
+has "systemctl is-active"   # the stubs ran, not the host's systemctl
+hasnt "systemctl restart"; hasnt "systemctl start"; hasnt "cfm edge off"; hasnt "cfm-edge -t"; hasnt "systemd-run"
+
+run "opt-out" active ON ON cfm-edge optout
+hasnt "systemctl restart"; hasnt "cfm edge off"; says "not restarting"
+
+run "config refused" active ON ON cfm-edge cfgbad
+hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "refuses the live config"
+
+run "config refused only in the sandbox" active ON ON cfm-edge sandboxbad
+hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "Read-only file system"
+has "-p ProtectSystem=strict"; has "-p ReadWritePaths=/var/log/cfm-edge /run"   # the unit's own properties, spaces intact
+if grep -- ' -t -q' <<<"$CALLS" | grep -q 'ProtectClock'; then fail "$CURRENT: a property systemd-run refuses transiently must be dropped from the -t run"; fi
+
+run "no systemd-run: plain -t" active OFF OFF cfm-edge nosdrun
+has "cfm-edge -t -q"; has "systemctl restart cfm-edge.service"
+
+run "old cfm" active ON ON cfm-edge oldcfm
+hasnt "systemctl restart"; hasnt "cfm edge off"; says "older than 2026.11.20"
+
+run "no cfm" active ON ON cfm-edge nocfm
+hasnt "systemctl restart"; says "no cfm on this node"
+
+run "DNAT state unreadable" active UNKNOWN ON cfm-edge
+hasnt "systemctl restart"; hasnt "cfm edge off"; says "cannot read the DNAT state"
+
+run "dnat off" active OFF OFF cfm-edge
+has "systemctl restart cfm-edge.service"; hasnt "cfm edge off"; hasnt "cfm edge on"; order "cfm-edge -t" "systemctl restart"
+
+run "another engine in the path" active ON ON openresty
+has "systemctl restart cfm-edge.service"; hasnt "cfm edge off"; hasnt "cfm edge panel off"; hasnt "cfm edge on"; state web ON; state panel ON
+
+run "engine ambiguous" active ON ON ambiguous
+hasnt "systemctl restart"; hasnt "cfm edge off"; says "cannot tell which engine"
+
+run "web on, panel off" active ON OFF cfm-edge
+order "cfm edge off" "systemctl restart"; lastorder "cfm edge on" "systemctl restart"; hasnt "cfm edge panel"; state web ON; state panel OFF
+has "cfm edge on --priority -101 --http-port 9080 --https-port 9043"   # the live priority comes back
+has "https://127.0.0.1:9043/"; has "--noproxy"
+
+run "web + panel on" active ON ON cfm-edge
+order "cfm edge off" "systemctl restart"; order "cfm edge panel off" "systemctl restart"
+lastorder "cfm edge on --priority" "systemctl restart"; lastorder "cfm edge panel on" "systemctl restart"; state web ON; state panel ON
+order "cfm-edge -t" "cfm edge off"; order "systemctl daemon-reload" "systemctl restart"
+
+run "panel only" active OFF ON cfm-edge
+order "cfm edge panel off" "systemctl restart"; hasnt "cfm edge off"; hasnt "cfm edge on"; state panel ON; state web OFF
+
+run "off did not take" active ON ON cfm-edge offstuck
+hasnt "systemctl restart"; state web ON; state panel ON; says "did not turn off"
+
+run "panel off did not take" active ON ON cfm-edge panelstuck
+hasnt "systemctl restart"; state web ON; state panel ON; says "did not turn off"
+
+run "off failed, state unknown" active ON ON cfm-edge offfail
+hasnt "systemctl restart"; state web ON; says "did not turn off"
+
+run "restart fails" active ON ON cfm-edge startfail
+has "systemctl start cfm-edge.service"; state web OFF; state panel OFF; says "DNAT STAYS OFF"; hasnt "cfm edge on"
+
+run "active but never serves" active ON ON cfm-edge notserving
+hasnt "systemctl start"; state web OFF; state panel OFF; says "DNAT STAYS OFF"; hasnt "cfm edge on"
+
+run "off reads OFF but its command failed" active ON OFF cfm-edge offrc
+hasnt "systemctl restart"; state web ON; says "did not turn off"
+
+run "active, answers, but not listening as cfm-edge" active ON ON cfm-edge nolisten
+state web OFF; says "DNAT STAYS OFF"; hasnt "cfm edge on"
+
+run "listening but no answer" active ON ON cfm-edge noanswer
+state web OFF; says "DNAT STAYS OFF"; hasnt "cfm edge on"
+
+echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off)"

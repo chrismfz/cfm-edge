@@ -97,7 +97,7 @@ sources: ## Fetch + verify every pinned input into SOURCES/ (sha256, PGP, git pi
 stage: sources ## Lay out an rpmbuild tree in build/ (used by rpm / srpm)
 	rm -rf $(TOPDIR) && mkdir -p $(TOPDIR)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 	cp -p SOURCES/*.tar.gz $(TOPDIR)/SOURCES/
-	cp -p packaging/rpm/cfm-edge.service packaging/rpm/cfm-edge.logrotate packaging/rpm/nginx.conf $(TOPDIR)/SOURCES/
+	cp -p packaging/rpm/cfm-edge.service packaging/rpm/cfm-edge.logrotate packaging/rpm/nginx.conf packaging/rpm/cfm-edge-upgrade-restart.sh $(TOPDIR)/SOURCES/
 	for p in patches/*/*.patch; do cp -p "$$p" "$(TOPDIR)/SOURCES/$$(basename $$(dirname $$p))-$$(basename $$p)"; done
 	cp -p packaging/rpm/cfm-edge.spec $(TOPDIR)/SPECS/
 
@@ -200,10 +200,11 @@ smoke-el8 smoke-el9 smoke-el10: ## Smoke the rpm built for that EL (dist/elN) in
 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10: ## CFM's real edge config + Lua on that EL's rpm (CFM_DIR=../cfm)
 	tools/container-build.sh $(subst cfm-conf-el,,$@) cfm-conf
 
-lint: ## bash -n + shellcheck + py_compile
+lint: ## bash -n + shellcheck + py_compile + the upgrade-restart test
 	for f in tools/*.sh tests/*.sh; do bash -n "$$f"; done
-	shellcheck -S warning tools/*.sh tests/*.sh
+	shellcheck -S warning tools/*.sh tests/*.sh packaging/rpm/*.sh
 	python3 -m py_compile tools/*.py
+	bash tests/upgrade-restart_test.sh
 
 clean: ## Remove build/ and dist/
 	rm -rf build dist
