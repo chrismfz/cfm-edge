@@ -29,18 +29,19 @@ and starts an edge.
   `upgrade-restart.sh` from `%posttrans` (CHANGELOG, CLAUDE.md). It restarts
   a running edge out of CFM's DNAT, after `-t`. `tests/upgrade-restart_test.sh`
   pins every branch.
-- [ ] **`worker_shutdown_timeout` in the config `install-edge.sh` renders**
-  (cfm repo), e.g. 10-15s. On a stop, nginx closes its listening sockets at
-  once and waits for open connections. CFM's config proxies streams with
-  `proxy_read_timeout 1h`, so a single websocket holds a stop for the unit's
-  full 90s, and new connections are refused until the next start. This
-  setting is the real bound on that window; `TimeoutStopSec` is only the
-  backstop.
-  - `install-edge.sh`'s switch should not sit in that window either: the old
-    edge has closed its ports as soon as it got SIGQUIT, so the new one can
-    start while the old one drains. Measure it on the canary.
-  - Decide whether OpenResty/Angie get the same line: their units have the
-    same 90s today.
+- [decided, not adding] **`worker_shutdown_timeout`** (measured 2026-11-21).
+  It caps the drain on a reload as well as on a stop, so every reload would
+  cut whatever long request is in flight. The fleet reloads its edge 3-8
+  times a day, and has thousands of requests a day over 10 s (5-9k per
+  node), hundreds over 60 s, the longest at 300 s (downloads, panel
+  transfers).
+  - The stop it would have shortened no longer refuses connections:
+    `upgrade-restart.sh` takes the edge out of the path first. What a long
+    drain costs is only the time without WAF: 17-90 s in the fleet upgrade
+    of 2026-11-21.
+  - `TimeoutStopSec=90` already bounds a stop.
+  - Revisit only if old workers pile up across reloads (none were draining
+    when measured).
 - [x] **`LimitNOFILE=262144`** in the unit, to match `openresty.service`
   (smoke test pins it).
   - CFM's config sets `worker_rlimit_nofile 65535`. The workers apply it

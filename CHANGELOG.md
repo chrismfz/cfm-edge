@@ -41,6 +41,15 @@ Fixed / Hardened / Security / Removed**.
     journal (`journalctl -t cfm-edge-upgrade`).
   - The transaction never fails because of it.
 
+### Fixed
+- **`upgrade-restart.sh` reads a DNAT state followed by a bypass note.** CFM
+  prints `Panel DNAT:  OFF; 1 bypass source(s)` on a node with bypass
+  sources.
+  - **What went wrong:** the script read that line as unknown. On orion (the
+    2026-11-21 fleet upgrade) it put the DNAT back as it was and did not
+    restart, so the new binary and sandbox waited for a manual restart.
+  - **Now:** a `;` after ON/OFF is read like a space.
+
 ### Hardened
 - **`cfm-edge.service` runs sandboxed** (ROADMAP.md §2, round 1):
   - the filesystem is read-only except the paths the edge writes (logs, Site

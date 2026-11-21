@@ -36,6 +36,7 @@ mkdir -p "$W/bin"
 #   nolisten    active and answers, but nothing listens on :9043 as cfm-edge
 #   noanswer    listens, but https://127.0.0.1:9043/ gets no answer (000)
 #   offrc       `cfm edge off` turns it OFF but exits non-zero
+#   bypass      CFM prints a bypass note right after the state ("OFF; 1 bypass source(s)")
 #   optout      the opt-out file exists
 #   nocfm       CFM_BIN points at nothing
 cat >"$W/bin/systemctl" <<'EOF'
@@ -72,12 +73,13 @@ w="$(cat "$S/web")"; p="$(cat "$S/panel")"
 case "$*" in
   "edge")
     echo "Edge"; echo "  Engine:      $(cat "$S/engine")"
+    b=""; [ -e "$S/bypass" ] && b="; 1 bypass source(s)"   # cfm's bypassNote(), as on orion
     case "$w" in
-      ON) echo "  Web DNAT:    ON   priority -101, tcp/80 -> :9080, tcp+udp/443 -> :9043" ;;
-      OFF) echo "  Web DNAT:    OFF  (the origin serves 80/443 directly)" ;;
+      ON) echo "  Web DNAT:    ON   priority -101, tcp/80 -> :9080, tcp+udp/443 -> :9043$b" ;;
+      OFF) echo "  Web DNAT:    OFF  (the origin serves 80/443 directly)$b" ;;
       *) echo "  Web DNAT:    UNKNOWN (nft: resource busy, ON maybe)"; rc=1 ;;
     esac
-    case "$p" in ON) echo "  Panel DNAT:  ON   priority -101, mode auto" ;; OFF) echo "  Panel DNAT:  OFF" ;; *) echo "  Panel DNAT:  UNKNOWN"; rc=1 ;; esac
+    case "$p" in ON) echo "  Panel DNAT:  ON   priority -101, mode auto$b" ;; OFF) echo "  Panel DNAT:  OFF$b" ;; *) echo "  Panel DNAT:  UNKNOWN"; rc=1 ;; esac
     exit "${rc:-0}" ;;
   "edge off") [ -e "$S/offfail" ] && { echo UNKNOWN >"$S/web"; exit 1; }
               [ -e "$S/offrc" ] && { echo OFF >"$S/web"; exit 1; }
@@ -213,5 +215,10 @@ state web OFF; says "DNAT STAYS OFF"; hasnt "cfm edge on"
 
 run "listening but no answer" active ON ON cfm-edge noanswer
 state web OFF; says "DNAT STAYS OFF"; hasnt "cfm edge on"
+
+run "bypass sources noted after the state" active ON ON cfm-edge bypass
+order "cfm edge off" "systemctl restart"; order "cfm edge panel off" "systemctl restart"
+lastorder "cfm edge on --priority -101 --http-port 9080 --https-port 9043" "systemctl restart"; lastorder "cfm edge panel on" "systemctl restart"
+state web ON; state panel ON
 
 echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off)"

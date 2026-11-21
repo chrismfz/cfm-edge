@@ -101,9 +101,12 @@ fi
 web_line="$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')"
 panel_line="$(printf '%s\n' "$st" | grep -m1 'Panel DNAT:')"
 engine_line="$(printf '%s\n' "$st" | grep -m1 'Engine:')"
+# The state word is followed by a space, the end of the line, or ";" when a
+# bypass note follows it directly ("Panel DNAT:  OFF; 1 bypass source(s)":
+# read as unknown, it stopped orion's upgrade on 2026-11-21, safely).
 state_of() { # ON -> 1, OFF -> 0, anything else (UNKNOWN, missing) -> x
-    if printf '%s\n' "$1" | grep -qE "^ *$2: +ON( |\$)"; then echo 1
-    elif printf '%s\n' "$1" | grep -qE "^ *$2: +OFF( |\$)"; then echo 0
+    if printf '%s\n' "$1" | grep -qE "^ *$2: +ON( |;|\$)"; then echo 1
+    elif printf '%s\n' "$1" | grep -qE "^ *$2: +OFF( |;|\$)"; then echo 0
     else echo x; fi
 }
 web_on="$(state_of "$web_line" 'Web DNAT')"
