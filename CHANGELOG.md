@@ -42,6 +42,11 @@ Fixed / Hardened / Security / Removed**.
   - The transaction never fails because of it.
 
 ### Fixed
+- **The smoke test no longer touches a live edge's logs.** Its two forced log
+  rotations ran `logrotate -f` on the packaged rule, which rotated every live
+  `/var/log/cfm-edge/*.log` and sent USR1 to the master on a host with a
+  live edge. They now run on a copy pointed at a scratch dir; the test fails
+  if the copy still names a live path.
 - **`upgrade-restart.sh` reads a DNAT state followed by a bypass note.** CFM
   prints `Panel DNAT:  OFF; 1 bypass source(s)` on a node with bypass
   sources.
