@@ -97,16 +97,27 @@ if command -v logrotate >/dev/null 2>&1; then
     # Two forced rotations a second apart, with ONLY this file (as CFM's
     # hourly pass runs it): both succeed, and name their generations by
     # date, never .1 (which the distro's daily run would not count).
-    lr_state="$P/logrotate.state"
-    mkdir -p /var/log/cfm-edge
-    echo one > /var/log/cfm-edge/smoke.log
-    check "forced rotation 1" logrotate -f -s "$lr_state" "$L"
-    sleep 1
-    echo two > /var/log/cfm-edge/smoke.log
-    check "forced rotation 2 in the same day (no name clash)" logrotate -f -s "$lr_state" "$L"
-    check "generations are date-named, not .1" bash -c \
-        "ls /var/log/cfm-edge/ | grep -qE '^smoke\.log-[0-9]{8}-[0-9]{6}' && ! ls /var/log/cfm-edge/ | grep -qE '^smoke\.log\.[0-9]'"
-    rm -f /var/log/cfm-edge/smoke.log*
+    # They run on a COPY of the packaged rule whose log glob and pid file
+    # point into $P: `logrotate -f` on the real file would rotate every live
+    # /var/log/cfm-edge/*.log and USR1 the production master next to a live
+    # edge (this script promises it is safe there).
+    lr_dir="$P/lr"; lr_conf="$P/logrotate-cfm-edge.conf"; lr_state="$P/logrotate.state"
+    mkdir -p "$lr_dir"
+    # (comments dropped: they name the live paths too)
+    sed -e '/^[[:space:]]*#/d' -e "s|/var/log/cfm-edge/\*\.log|$lr_dir/*.log|" -e "s|/run/cfm-edge\.pid|$lr_dir/none.pid|g" "$L" >"$lr_conf"
+    check "the rotation copy points at the scratch dir, not the live logs" bash -c \
+        "grep -qF '$lr_dir/*.log' '$lr_conf' && grep -qF '$lr_dir/none.pid' '$lr_conf' && ! grep -qE '/var/log/cfm-edge|/run/cfm-edge\.pid' '$lr_conf'"
+    if grep -qE '/var/log/cfm-edge|/run/cfm-edge\.pid' "$lr_conf"; then
+        bad "rotation copy still names a live path: not forcing a rotation"
+    else
+        echo one > "$lr_dir/smoke.log"
+        check "forced rotation 1" logrotate -f -s "$lr_state" "$lr_conf"
+        sleep 1
+        echo two > "$lr_dir/smoke.log"
+        check "forced rotation 2 in the same day (no name clash)" logrotate -f -s "$lr_state" "$lr_conf"
+        check "generations are date-named, not .1" bash -c \
+            "ls '$lr_dir/' | grep -qE '^smoke\.log-[0-9]{8}-[0-9]{6}' && ! ls '$lr_dir/' | grep -qE '^smoke\.log\.[0-9]'"
+    fi
 fi
 
 echo "== package placeholder config"

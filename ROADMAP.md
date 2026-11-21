@@ -166,14 +166,29 @@ already include:
     (`__stack_chk_fail`), FORTIFY in use (4 `__*_chk` symbols). Not yet
     checked: `-fcf-protection` / `-fstack-clash-protection` (need
     `annobin`/`annocheck`), LuaJIT and `cjson.so`.
+- [ ] **`%check` asserts the hardening of every ELF we load**, not only the
+  binary: `/usr/sbin/cfm-edge`, `libluajit-5.1.so.2` and `cjson.so` each
+  with a non-executable `GNU_STACK`, `GNU_RELRO` and `BIND_NOW`, plus PIE on
+  the executable. Cheap, and every later build then proves it.
 - [ ] **OpenSSL is built by its own `Configure`** (static, through
-  `--with-openssl`), so it does not necessarily get the same flags. Measure
-  it, and if needed pass them through `--with-openssl-opt`.
+  `--with-openssl`), so it does not necessarily get the same flags: nginx's
+  `--with-cc-opt` and the final binary's symbols prove nothing about the C
+  code of libcrypto/libssl, which does every TLS handshake.
+  1. Measure: the compiler lines of `crypto/` and `ssl/` in a `V=1` build
+     log, then `annocheck` on the binary.
+  2. Only if they are missing, add `-fstack-protector-strong
+     -fstack-clash-protection -D_FORTIFY_SOURCE=2` (and `-fcf-protection`)
+     through `--with-openssl-opt`. Keep OpenSSL's assembly on.
+  3. Compare handshake CPU before and after (§6).
 - [ ] `_FORTIFY_SOURCE=3` once EL8 leaves the fleet (the build moves to the
   next-oldest EL, CLAUDE.md).
 - [ ] An `-fzero-call-used-regs` / `-ftrivial-auto-var-init=zero` check:
   cost against benefit, measured.
 - **LTO stays off** (LuaJIT, CLAUDE.md).
+- [decided] `-O3` / `-march=native` stay out of the release rpm: it keeps the
+  EL8 CPU baseline and the distro flags. A host-specific build (an R630) is an
+  experiment outside the repo, measured on handshake CPU (§6) with nginx,
+  cert, TLS group and client held constant.
 
 ## 4. Attack surface: modules
 
@@ -195,9 +210,82 @@ Done (spec `--without-*`):
 - [ ] Confirm `worker_rlimit_nofile` stays in CFM's config (it covers the
   workers today, §1).
 
+## 6. Tests
+
+- [x] **The smoke test's forced log rotation runs on a copy** (2026-11-21).
+  - **The bug:** `logrotate -f` on the packaged `/etc/logrotate.d/cfm-edge`
+    rotated every live `/var/log/cfm-edge/*.log` and sent USR1 to the master
+    in `/run/cfm-edge.pid`, on a host with a live edge (which the script
+    promises it is safe next to).
+  - **Now:** the two forced runs use a copy whose glob and pid file point into
+    the scratch dir, and the test fails if the copy still names a live path.
+    `logrotate -d` still parses the packaged file.
+- [ ] **A real HTTP/3 request in the test run, never skipped.** The smoke test
+  checks the QUIC listener binds, but skips the `--http3-only` request when
+  the container's curl has no HTTP/3, which EL's curl does not. That breaks
+  "a test that cannot run must fail". The private OpenSSL is what QUIC rides
+  on, so every OpenSSL bump needs this.
+  - Simplest: a QUIC handshake with ALPN `h3` through `openssl s_client
+    -quic` built from the same pinned OpenSSL.
+  - Or a pinned curl with HTTP/3 in one test container.
+
+## 7. Performance (measure first)
+
+The goal is less CPU per connection and fewer bytes. Each item is measured
+before and after on the same traffic; nothing ships on reasoning alone.
+
+- [ ] **TLS handshakes: full vs resumed, per connection.** Baseline today:
+  `ssl_session_cache shared:cfm_ssl:20m`, `ssl_session_timeout 4h` (CFM's
+  conf).
+  - Count per connection, not per access-log line: `sslr="r"` repeats on
+    every request of an HTTP/2 connection and overstates resumption.
+  - Report CPU-seconds per 1,000 handshakes (and joules if measured).
+  - This is the first measurement for "less CPU per handshake", and the
+    baseline for §3's OpenSSL flags.
+- [ ] **Compression today**, read-only: Accept-Encoding, the upstream and the
+  final Content-Encoding, MIME type and bytes.
+  - It tells how many compressible bytes leave uncompressed to clients that
+    accept br.
+  - Where the origin (LiteSpeed) already sends br, the edge only passes it
+    through.
+  - It decides the Brotli item below.
+- [ ] **`pcre_jit on;`** in the main context: a cheap, reversible A/B.
+  - **What it covers:** the regexes of the nginx config only, about 6
+    `location ~` and 40 regex `map` / `if` in CFM's conf.
+  - **What it does not:** CFM's Lua makes no `ngx.re` call (measured
+    2026-11-21: its ~1,000 searches are Lua patterns, run by LuaJIT, not
+    PCRE), so the WAF/challenge logic is untouched.
+  - **Expectation:** small. Measure CPU per 1,000 requests on representative
+    traffic. PCRE's JIT needs W+X memory, like LuaJIT's (§2: no
+    `MemoryDenyWriteExecute` either way).
+- [ ] **Brotli (dynamic module, opt-in)**, only if the compression read shows
+  enough uncompressed bytes. It is a new module, so attack surface
+  ("a module goes in when CFM needs it", CLAUDE.md).
+  - First A/B on public assets: Brotli 4 against gzip 1, on bytes and worker
+    CPU for the same content.
+  - Test br, gzip and identity on cache HIT and MISS, and check
+    `Vary: Accept-Encoding`.
+  - Scope it to the assets locations (`brotli on` covers HTML too).
+- [ ] **`quic_gso on;`**, only on a node with real HTTP/3 download traffic.
+  Judge it by worker CPU per GiB and throughput on the same download. Read the
+  H3 share with the TLS item first.
+- [ ] **`proxy_cache_revalidate on;`** for Site Cache's static tier, only if
+  EXPIRED/STALE are frequent there. A 304 avoids re-sending the body; measure
+  REVALIDATED, origin bytes and origin CPU.
+  - It changes Site Cache, so it goes through CFM's cache guards and parity
+    tests (cfm CLAUDE.md §6), never as a lone conf edit.
+
 ## Decided
 
 - Hardening is a canary-first change, never a fleet-wide flip: one unit
   directive too many takes every site on a node down at once.
 - The JIT and `MemoryDenyWriteExecute` are a pair: choose one after
   measuring, never both by assumption.
+- [decided, 2026-11-21] No `buffer=`/`flush=` on the access logs.
+  - The busiest node writes about 30 requests/s (2.7M a day), so the
+    `write()` calls it would save are negligible.
+  - A buffer delays the lines CFM's webdetector reacts to, and loses the last
+    buffer on a crash.
+- [decided, 2026-11-21] No `brotli_static`: the edge serves no local assets of
+  its own (only the challenge page). Customer files come through
+  `proxy_pass`, where the origin pass-through and dynamic Brotli (§7) apply.
