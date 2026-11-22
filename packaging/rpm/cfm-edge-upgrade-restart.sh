@@ -37,6 +37,12 @@ BIN="${CFM_EDGE_BIN:-/usr/sbin/cfm-edge}"
 CFM="${CFM_BIN:-cfm}"
 OPTOUT="${CFM_EDGE_OPTOUT:-/etc/cfm-edge/no-upgrade-restart}"
 WAIT="${CFM_EDGE_UPGRADE_WAIT:-30}"   # seconds to wait for the new edge to serve
+# Waits between tries of a failed `cfm edge on/off` (seconds). The same yum
+# transaction often upgrades cfm too, and its post-install restarts the cfm daemon:
+# on EL8 the daemon's firewall setup then holds nft for 30-55 s, and a
+# one-shot `cfm edge on` in that window fails (earth, 2026-11-22: one try,
+# the web DNAT stayed off for 53 minutes). 10+20+30+60 s covers it.
+RETRY_DELAYS="${CFM_EDGE_RETRY_DELAYS:-10 20 30 60}"
 UNIT=cfm-edge.service
 
 say() {
@@ -46,6 +52,19 @@ say() {
 # A hung CLI (an nft lock) must not hang the yum transaction.
 cfm_run() {
     if command -v timeout >/dev/null 2>&1; then timeout 60 "$CFM" "$@"; else "$CFM" "$@"; fi
+}
+# cfm_retry ARGS...: `cfm ARGS`, tried again after each of RETRY_DELAYS while
+# it fails. Every failure is logged with the CLI's own last lines: they used
+# to go to /dev/null, so a failed `cfm edge on` said nothing about why.
+cfm_retry() {
+    out="$(cfm_run "$@" 2>&1)" && return 0
+    for d in $RETRY_DELAYS; do
+        say "cfm $* failed ($(printf '%s\n' "$out" | tail -2 | tr '\n' ' ')); retrying in ${d}s (the cfm daemon may still be starting)"
+        sleep "$d"
+        out="$(cfm_run "$@" 2>&1)" && return 0
+    done
+    say "WARNING: cfm $* still failing after retries: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+    return 1
 }
 
 systemctl is-active --quiet "$UNIT" 2>/dev/null || exit 0
@@ -153,18 +172,18 @@ back_in() {
     rc=0
     if [ "$web_on" = 1 ]; then
         # shellcheck disable=SC2086  # web_args is numbers and flags only
-        cfm_run edge on $web_args >/dev/null 2>&1 || { say "WARNING: cfm edge on $web_args failed; run it by hand"; rc=1; }
+        cfm_retry edge on $web_args || { say "WARNING: cfm edge on $web_args failed; run it by hand"; rc=1; }
     fi
     if [ "$panel_on" = 1 ]; then
-        cfm_run edge panel on >/dev/null 2>&1 || { say "WARNING: cfm edge panel on failed; run it by hand"; rc=1; }
+        cfm_retry edge panel on || { say "WARNING: cfm edge panel on failed; run it by hand"; rc=1; }
     fi
     return "$rc"
 }
 
 say "cfm-edge is in the path (web DNAT $web_on, panel DNAT $panel_on): taking it out, restarting, putting it back"
 off_rc=0
-if [ "$web_on" = 1 ]; then cfm_run edge off >/dev/null 2>&1 || off_rc=1; fi
-if [ "$panel_on" = 1 ]; then cfm_run edge panel off >/dev/null 2>&1 || off_rc=1; fi
+if [ "$web_on" = 1 ]; then cfm_retry edge off || off_rc=1; fi
+if [ "$panel_on" = 1 ]; then cfm_retry edge panel off || off_rc=1; fi
 st="$(cfm_run edge 2>&1)"
 # Restart only on a positive OFF for both: never while it may take traffic.
 if [ "$off_rc" != 0 ] || [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')" 'Web DNAT')" != 0 ] \
@@ -204,5 +223,20 @@ if ! wait_healthy; then
 fi
 
 back_in
-say "restarted; $(cfm_run edge 2>/dev/null | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')"
+# Put back means read back ON: a DNAT that was on and reads anything else now
+# is an edge out of the path (no WAF), which must not end in "restarted".
+st="$(cfm_run edge 2>&1)"
+now="$(printf '%s\n' "$st" | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')"
+lost=""
+if [ "$web_on" = 1 ] && [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')" 'Web DNAT')" != 1 ]; then
+    lost="cfm edge on${web_args:+ $web_args}"
+fi
+if [ "$panel_on" = 1 ] && [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Panel DNAT:')" 'Panel DNAT')" != 1 ]; then
+    lost="${lost:+$lost && }cfm edge panel on"
+fi
+if [ -n "$lost" ]; then
+    say "ERROR: cfm-edge restarted, but the DNAT is not back ($now): the sites are served by the origin directly, without WAF/challenge. Run: $lost"
+    exit 0
+fi
+say "restarted; $now"
 exit 0
