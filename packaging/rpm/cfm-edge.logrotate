@@ -26,8 +26,16 @@
     notifempty
     compress
     delaycompress
+    # 0640 as the unit's UMask=0027 makes the edge's own files (owner and
+    # group as the old file: no user named here, cfm may not exist).
+    create 0640
     sharedscripts
+    # The pid moved into the unit's RuntimeDirectory; the old path covers an
+    # edge started before the upgrade and not restarted since.
     postrotate
-        [ -s /run/cfm-edge.pid ] && kill -USR1 "$(cat /run/cfm-edge.pid)" 2>/dev/null || true
+        for p in /run/cfm-edge/cfm-edge.pid /run/cfm-edge.pid; do
+            [ -s "$p" ] && kill -USR1 "$(cat "$p")" 2>/dev/null && break
+        done
+        true
     endscript
 }

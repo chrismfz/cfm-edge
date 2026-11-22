@@ -59,6 +59,20 @@ Fixed / Hardened / Security / Removed**.
   - **Now:** a `;` after ON/OFF is read like a space.
 
 ### Hardened
+- **`/run` is read-only for the edge; the pid moved to `/run/cfm-edge/`.**
+  The master runs as root, and `/run/systemd/system` is a unit load path, so
+  with `/run` writable a compromised master could write an unsandboxed unit
+  there. The pid (the edge's only write under `/run`, measured on virgo) now
+  lives in the unit's `RuntimeDirectory=cfm-edge`: `--pid-path`,
+  `PIDFile=` and the logrotate USR1 all point there (logrotate also tries the
+  old path, for an edge not restarted since the upgrade). **Needs a cfm with
+  PR #1755**, whose cfm-edge config sets no `pid`: on a node whose live
+  config still sets one, the post-upgrade restart is refused (the running edge
+  keeps serving) and a later start would fail with "Read-only file system".
+- **The edge's files are no longer world-readable** (`UMask=0027`). The logs
+  were 0644: every local account with a shell could read every visitor's IP
+  and full URL, query strings included. The rpm drops the world bits of the
+  existing logs once, and logrotate creates 0640 files.
 - **The static OpenSSL is now built with the stack protector, stack-clash
   protection, CET and FORTIFY.** Its own `Configure` ignores the distro
   flags, so until now libcrypto/libssl, the code every TLS handshake runs,
@@ -94,3 +108,10 @@ Fixed / Hardened / Security / Removed**.
   - **If CFM's edge config ever writes to a new path**, that path must be
     added to the unit's `ReadWritePaths=`, or requests that need it fail with
     "Read-only file system" while the edge looks healthy.
+
+### Removed
+- **`--with-threads`, `--with-file-aio` and `stub_status`.** CFM's config,
+  Go, Lua and scripts use none of them (no `aio`, `thread_pool` or
+  `stub_status`), and a module CFM does not use is attack surface. `make
+  test-all` runs `-t` on CFM's real config, so a later use fails the build.
+

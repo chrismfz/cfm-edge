@@ -136,22 +136,55 @@ the start or a test with the path or directive named; "silent" means it
 fails later, somewhere else, with nothing pointing back here. Silent risks
 are what we avoid.
 
-- [ ] **Narrow `/run`.** Win: real. The master is root, and `/run/systemd/system`
+- [ ] **Narrow `/run`** (in the unit since this rpm; canary first, below).
+  Win: real. The master is root, and `/run/systemd/system`
   is a unit load path, so a compromised master with `/run` writable could
   write an unsandboxed unit there. Measured on virgo: the edge writes only
   its pid under `/run`. `/run/cfm/*.sock` and `/var/run/sslcollector.sock`
   are only connected to, which a read-only mount allows. Risk: loud (a pid
   path the sandbox refuses fails the start), but it crosses repos: the
   unit's `PIDFile=`, CFM's `pid` line and the logrotate `postrotate` must
-  agree. Plan: `RuntimeDirectory=cfm-edge` and the new pid path accepted
-  first, while `/run` stays writable; CFM's conf moves; only then
-  `ReadWritePaths=` drops `/run`.
-- [ ] **`UMask=0027`, and `/var/log/cfm-edge` at 0750.** Win: real. Today the
-  logs are 0644 in a 0755 dir: on virgo, 352 accounts with a shell could
-  read every visitor's IP and full URL, query strings included (reset
-  tokens). CageFS hides `/var/log` from jailed users, but nothing in the
-  package relies on that. Risk: low and loud. A non-root reader of the logs
-  would get EACCES; CFM's daemon is root. Canary first.
+  agree. Done in order: CFM's conf sets no `pid` (cfm PR #1755), then this
+  rpm moves the compiled `--pid-path` and `PIDFile=` into
+  `RuntimeDirectory=cfm-edge` and drops `/run` from `ReadWritePaths=`.
+  `upgrade-restart.sh` refuses to restart while the live config still sets
+  its own `pid`; logrotate tries the new pid path, then the old.
+- [ ] **`UMask=0027`** (same rpm), and `%post` drops the world bits of the
+  existing logs once; logrotate `create 0640`. The log dir stays 0755: the
+  workers reopen the logs on USR1 as `cfm`, and the package cannot name a
+  `cfm` group (it does not create that user). 0640 files are enough.
+  Why `UMask`: the logs were 0644 in a 0755 dir: on virgo, 352 accounts
+  with a shell could read every visitor's IP and full URL, query strings
+  included (reset tokens). CageFS hides `/var/log` from jailed users, but
+  nothing in the package relies on that. Risk: low and loud (a non-root
+  reader of the logs gets EACCES; CFM's daemon is root). The group bits stay:
+  clamd and CFM read `/var/lib/cfm/scanner/pending` (root:cfm 0770) as root
+  or through the group, so a reader that can reach those files today still
+  can.
+- **Canary for both, before the rpm** (CLAUDE.md: a drop-in first), on virgo
+  (EL8) and rigel (EL9), once the live config sets no `pid`:
+  ```ini
+  # /etc/systemd/system/cfm-edge.service.d/zz-run-umask.conf
+  [Service]
+  PIDFile=/run/cfm-edge/cfm-edge.pid
+  RuntimeDirectory=cfm-edge
+  RuntimeDirectoryMode=0755
+  ExecStartPre=
+  ExecStartPre=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ExecStart=
+  ExecStart=/usr/sbin/cfm-edge -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ReadWritePaths=
+  ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
+  UMask=0027
+  ```
+  The installed logrotate still sends USR1 through `/run/cfm-edge.pid`: for
+  the canary, `ln -sfn /run/cfm-edge/cfm-edge.pid /run/cfm-edge.pid` on the
+  host (outside the sandbox `/run` is writable); remove it, and the
+  drop-in, once the rpm carries the change. Then the recipe above:
+  sandboxed `-t`, out of the path, restart, the pid
+  in `/run/cfm-edge/`, a write test into `/run` that fails, a reload, a
+  forced logrotate (`USR1` through the new path; the new log 0640), and
+  live traffic.
 - [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024) and check
   `CAP_DAC_OVERRIDE`. Win: small (root without them still owns almost
   everything). Risk: loud (bind or open fails at `-t`/start). One canary
@@ -218,11 +251,11 @@ Done (spec `--without-*`):
 - Removing `http_mirror_module` and `http_ssi_module` removes the
   CVE-2026-123634 path entirely.
 
-- [ ] Review what remains against "a module goes in when CFM needs it"
+- [x] Review what remains against "a module goes in when CFM needs it"
   (CLAUDE.md). Read on virgo's live config, 2026-11-22: `auth_request` (2
   uses) and `realip` are used; no `aio`, `thread_pool` or `stub_status`, so
-  `--with-threads`, `--with-file-aio` and `stub_status` are candidates to
-  drop. `compat` stays while a dynamic module (Brotli, §7) is possible.
+  `--with-threads`, `--with-file-aio` and `stub_status` are dropped (same
+  rpm as the `/run` change). `compat` stays while a dynamic module (Brotli, §7) is possible.
   Win: small (less code). Risk: loud, since CFM's real config runs `-t` in
   `make test-all` (cfm-conf). CFM's Go, Lua, confs and scripts use none of
   the three either (grep, 2026-11-22).

@@ -9,7 +9,14 @@ Wants=network-online.target
 
 [Service]
 Type=forking
-PIDFile=/run/cfm-edge.pid
+# The pid lives in the unit's own RuntimeDirectory (/run/cfm-edge, created at
+# start, removed at stop), the package's compiled --pid-path: /run itself is
+# read-only in the sandbox. CFM's config sets no pid (since cfm PR #1755), so
+# the compiled default applies; a config that sets one fails the start with
+# "Read-only file system" (upgrade-restart.sh refuses to restart into it).
+PIDFile=/run/cfm-edge/cfm-edge.pid
+RuntimeDirectory=cfm-edge
+RuntimeDirectoryMode=0755
 ExecStartPre=/usr/sbin/cfm-edge -t -q
 ExecStart=/usr/sbin/cfm-edge
 ExecReload=/usr/sbin/cfm-edge -t -q
@@ -51,11 +58,21 @@ RestartSec=2
 #   /var/lib/cfm-edge      compiled-in temp paths
 #   /var/lib/cfm/nginx     client_body_temp_path / proxy_temp_path in CFM's config
 #   /var/lib/cfm/scanner   ClamAV inline scan: the Lua writes the pending file
-#   /run                   pid + lock (/run/cfm-edge.pid, /run/lock/); too wide,
-#                          narrowed when they move into /run/cfm-edge/ (ROADMAP)
-# Unix sockets (CFM bridge, sslcollector, ingest, clamd) need no write path.
+#   /run/cfm-edge          pid + lock: the RuntimeDirectory above, writable by
+#                          systemd itself, so not listed. /run stays read-only:
+#                          the root master could otherwise write a unit into
+#                          /run/systemd/system (a unit load path) and leave
+#                          the sandbox. Measured on virgo, 2026-11-22: the pid
+#                          was the edge's only write under /run.
+# Unix sockets (CFM bridge, sslcollector, ingest, clamd) need no write path:
+# connecting to one on a read-only mount works.
 ProtectSystem=strict
-ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner /run
+ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
+# Files the edge creates are not world-readable: logs (every visitor's IP and
+# full URL), pid, cache and temp files. Group bits stay: CFM's daemon and
+# clamd read what the edge writes as root, or through the cfm group of
+# /var/lib/cfm/scanner/pending (root:cfm 0770), which this keeps.
+UMask=0027
 # The edge never reads /home: on a cPanel server that is every customer's site.
 ProtectHome=yes
 PrivateTmp=yes

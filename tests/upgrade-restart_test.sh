@@ -39,6 +39,7 @@ mkdir -p "$W/bin"
 #   bypass      CFM prints a bypass note right after the state ("OFF; 1 bypass source(s)")
 #   optout      the opt-out file exists
 #   nocfm       CFM_BIN points at nothing
+#   pidline     the live config (cfm-edge -T) sets its own pid
 cat >"$W/bin/systemctl" <<'EOF'
 #!/bin/sh
 S="$STUB_STATE"; echo "systemctl $*" >>"$S/calls"
@@ -93,6 +94,12 @@ cat >"$W/bin/cfm-edge" <<'EOF'
 #!/bin/sh
 echo "cfm-edge $*" >>"$STUB_STATE/calls"
 [ -e "$STUB_STATE/cfgbad" ] && { echo "nginx: [emerg] unknown directive" >&2; exit 1; }
+if [ "$1" = -T ]; then
+  # Always an inline-Lua "pid =" line: it must never read as a pid directive.
+  printf '# configuration file /etc/cfm-edge/nginx.conf:\nworker_processes 6;\n'
+  [ -e "$STUB_STATE/pidline" ] && printf 'pid       /run/cfm-edge.pid;\n'
+  printf 'http {\n    init_worker_by_lua_block {\n        local t = { pid = ngx.worker.pid() }\n        pid = t.pid\n    }\n}\n'
+fi
 exit 0
 EOF
 cat >"$W/bin/ss" <<'EOF'
@@ -158,6 +165,13 @@ hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "Read-only f
 has "-p ProtectSystem=strict"; has "-p ReadWritePaths=/var/log/cfm-edge /run"   # the unit's own properties, spaces intact
 if grep -- ' -t -q' <<<"$CALLS" | grep -q 'ProtectClock'; then fail "$CURRENT: a property systemd-run refuses transiently must be dropped from the -t run"; fi
 
+run "live config sets its own pid" active ON ON cfm-edge pidline
+hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; state panel ON; says "sets its own pid"
+has "cfm-edge -T"
+
+run "inline Lua 'pid =' is not a pid directive" active OFF OFF cfm-edge
+has "cfm-edge -T"; has "systemctl restart"
+
 run "no systemd-run: plain -t" active OFF OFF cfm-edge nosdrun
 has "cfm-edge -t -q"; has "systemctl restart cfm-edge.service"
 
@@ -221,4 +235,4 @@ order "cfm edge off" "systemctl restart"; order "cfm edge panel off" "systemctl 
 lastorder "cfm edge on --priority -101 --http-port 9080 --https-port 9043" "systemctl restart"; lastorder "cfm edge panel on" "systemctl restart"
 state web ON; state panel ON
 
-echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off)"
+echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / a config pid / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off)"

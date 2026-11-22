@@ -16,6 +16,8 @@
 #   cfm-edge not running             -> nothing
 #   /etc/cfm-edge/no-upgrade-restart -> nothing (the operator restarts it)
 #   new binary refuses the config    -> nothing: the old edge keeps serving
+#   live config sets its own pid     -> nothing (the start would fail: the
+#                                       pid path is the package's)
 #     (tested inside the new unit's sandbox when systemd-run can, so a
 #     sandbox change that would fail the restart is caught here too)
 #   DNAT state not readable          -> nothing, warning (no blind restart)
@@ -85,6 +87,16 @@ config_test() {
 }
 if ! config_test; then
     say "WARNING: the new cfm-edge refuses the live config (cfm-edge -t, in the unit's sandbox); NOT restarting, the running edge keeps serving. Fix it, then restart it out of the path."
+    exit 0
+fi
+
+# The pid path is the package's (its compiled default, in the unit's
+# RuntimeDirectory; /run itself is read-only in the sandbox). A live config
+# that still sets its own pid (a cfm without PR #1755, or a hand-written
+# one) passes -t but fails the start with "Read-only file system". The
+# regex wants a value after "pid", never "=": inline Lua says `pid = ...`.
+if "$BIN" -T 2>/dev/null | grep -qE '^[[:space:]]*pid[[:space:]]+[^=[:space:]]'; then
+    say "WARNING: the live config sets its own pid; this cfm-edge owns that path (/run/cfm-edge/), and the start would fail. NOT restarting, the running edge keeps serving. Update cfm (its config sets no pid since PR #1755) or drop the pid line, then restart cfm-edge out of the path."
     exit 0
 fi
 

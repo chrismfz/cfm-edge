@@ -23,13 +23,14 @@ integration state and next steps: HANDOFF.md.
 
 All pins live in **`versions.env`**, and nothing else repeats a version.
 
-**nginx modules:** `http_ssl`, `http_v2`, `http_v3`, `realip`,
-`auth_request` and `stub_status` are added, plus the defaults (proxy,
-`limit_req`, geo/map, gzip, upstream keepalive, cache). Left out, because
-CFM's edge uses none of them: fastcgi, uwsgi, scgi, grpc, memcached, ssi,
-autoindex, userid, mirror, empty_gif, split_clients and auth_basic (also drops
-the libcrypt dependency). A module goes in when
-CFM needs it, not because it exists (CLAUDE.md).
+**nginx modules:** `http_ssl`, `http_v2`, `http_v3`, `realip` and
+`auth_request` are added, plus the defaults (proxy, `limit_req`, geo/map,
+gzip, upstream keepalive, cache). Left out, because CFM's edge uses none of
+them: fastcgi, uwsgi, scgi, grpc, memcached, ssi, autoindex, userid, mirror,
+empty_gif, split_clients, auth_basic (also drops the libcrypt dependency),
+`stub_status`, and thread pools / file AIO (`--with-threads`,
+`--with-file-aio`: CFM's config has no `aio` or `thread_pool`). A module
+goes in when CFM needs it, not because it exists (CLAUDE.md).
 
 **Not included:** lua-resty-openssl. lua-resty-http logs one WARN that mTLS
 to upstreams is unavailable; OpenResty nodes log the same, since their

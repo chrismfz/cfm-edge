@@ -172,13 +172,11 @@ cd nginx-%{nginx_version}
     --conf-path=%{edge_confdir}/nginx.conf \
     --error-log-path=%{edge_logdir}/error.log \
     --http-log-path=%{edge_logdir}/access.log \
-    --pid-path=/run/cfm-edge.pid \
-    --lock-path=/run/lock/cfm-edge.lock \
+    --pid-path=/run/cfm-edge/cfm-edge.pid \
+    --lock-path=/run/cfm-edge/cfm-edge.lock \
     --http-client-body-temp-path=%{edge_statedir}/client_body \
     --http-proxy-temp-path=%{edge_statedir}/proxy \
     --build="cfm-edge-%{version}-%{release}" \
-    --with-threads \
-    --with-file-aio \
     --with-compat \
     --with-pcre-jit \
     --with-http_ssl_module \
@@ -186,7 +184,6 @@ cd nginx-%{nginx_version}
     --with-http_v3_module \
     --with-http_realip_module \
     --with-http_auth_request_module \
-    --with-http_stub_status_module \
     --without-http_auth_basic_module \
     --without-http_fastcgi_module \
     --without-http_uwsgi_module \
@@ -258,6 +255,10 @@ readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "%{luajit_prefix}/lib"
 if readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "luajit-stage"; then echo "staging RPATH leaked" >&2; exit 1; fi
 
 %post
+# Logs written before UMask=0027 (and their rotated copies) were 0644: drop
+# the world bits once, so a visitor's IP and full URL are not readable by
+# every local account. Files written after it are 0640 already.
+chmod o-rwx %{edge_logdir}/* 2>/dev/null || :
 %systemd_post cfm-edge.service
 
 %preun
