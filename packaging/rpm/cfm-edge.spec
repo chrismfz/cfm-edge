@@ -55,6 +55,7 @@ Source20:       cfm-edge.service
 Source21:       cfm-edge.logrotate
 Source22:       nginx.conf
 Source23:       cfm-edge-upgrade-restart.sh
+Source24:       elf-hardening-check.sh
 
 # Our own patches, one change each (patches/<component>/ in the repo).
 Patch1:         nginx-0001-server-name-cfm-edge.patch
@@ -240,9 +241,11 @@ LD_LIBRARY_PATH=%{buildroot}%{luajit_prefix}/lib "$bin" -V 2>&1 | tee version.tx
 grep -q "nginx/%{nginx_version}" version.txt
 grep -q "OpenSSL %{openssl_version}" version.txt
 grep -q -- "--add-module=.*lua-nginx-module" version.txt
-readelf -h "$bin" | grep -q 'Type:.*DYN'
-readelf -l "$bin" | grep -q GNU_RELRO
-readelf -d "$bin" | grep -qE 'BIND_NOW|FLAGS.*NOW'
+# Link hardening on every ELF the package ships (non-executable stack, full
+# RELRO, PIE), enforced; plus a report of the static OpenSSL's compile
+# hardening (stack protector, FORTIFY) next to nginx's own objects. The
+# script's header says what each line means.
+sh %{SOURCE24} %{buildroot} "$bin" openssl-%{openssl_version} nginx-%{nginx_version}/objs
 readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "%{luajit_prefix}/lib"
 # (no "! cmd" here: an inverted command never trips sh -e)
 if readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "luajit-stage"; then echo "staging RPATH leaked" >&2; exit 1; fi

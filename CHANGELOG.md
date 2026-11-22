@@ -56,6 +56,17 @@ Fixed / Hardened / Security / Removed**.
   - **Now:** a `;` after ON/OFF is read like a space.
 
 ### Hardened
+- **Every build proves the link hardening of everything it ships.** The
+  rpm's `%check` (`packaging/rpm/elf-hardening-check.sh`) fails the build
+  when any ELF in the package (the binary, LuaJIT, `cjson.so`, the luajit
+  CLI) lacks a non-executable stack, full RELRO (`GNU_RELRO` + `BIND_NOW`),
+  or, for `/usr/sbin/cfm-edge`, PIE. LuaJIT and lua-cjson build with their
+  own Makefiles, so a bump that stopped passing the distro's LDFLAGS would
+  otherwise ship unnoticed. The same step reports, without failing, what
+  compile hardening the static OpenSSL got (its own `Configure` does not
+  read the distro flags): its Makefile's `CFLAGS` and the share of
+  `libcrypto`/`libssl` objects with the stack protector and FORTIFY, next to
+  nginx's own.
 - **`cfm-edge.service` runs sandboxed** (ROADMAP.md §2, round 1):
   - the filesystem is read-only except the paths the edge writes (logs, Site
     Cache, the body/proxy temp dirs of CFM's config, the ClamAV pending dir,
