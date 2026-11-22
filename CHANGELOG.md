@@ -9,6 +9,9 @@ Fixed / Hardened / Security / Removed**.
 ## [Unreleased]
 
 ### Added
+- **`make release`** runs the whole pre-publish chain in order (`lint`,
+  `package`, `test-all`), so a release is `make release && make sync`;
+  **`make distclean`** also drops the fetched `SOURCES/`.
 - **An upgrade now applies itself to a running edge, without refusing
   connections** (`/usr/lib/cfm-edge/upgrade-restart.sh`, run by the rpm's
   `%posttrans`).
@@ -56,6 +59,12 @@ Fixed / Hardened / Security / Removed**.
   - **Now:** a `;` after ON/OFF is read like a space.
 
 ### Hardened
+- **The static OpenSSL is now built with the stack protector, stack-clash
+  protection, CET and FORTIFY.** Its own `Configure` ignores the distro
+  flags, so until now libcrypto/libssl, the code every TLS handshake runs,
+  were compiled with `-Wall -O3 -fPIC` only: the new `%check` counted 0% of
+  their objects protected, against 69% of nginx's. The flags go in through
+  `--with-openssl-opt`, and `%check` now fails a build without them.
 - **Every build proves the link hardening of everything it ships.** The
   rpm's `%check` (`packaging/rpm/elf-hardening-check.sh`) fails the build
   when any ELF in the package (the binary, LuaJIT, `cjson.so`, the luajit

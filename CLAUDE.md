@@ -86,8 +86,9 @@ a canary**.
 ## Before you push
 
 ```sh
-make lint
-make package test-all      # build on EL8; smoke + cfm-conf on EL8/9/10 (CFM_DIR=../cfm)
+make release      # = make lint package test-all: build on EL8 (its %check
+                  #   enforces the ELF + OpenSSL hardening); smoke + cfm-conf
+                  #   on EL8/9/10 (CFM_DIR=../cfm), which stamps it for make sync
 ```
 
 - **Publish only what was tested.** `make sync` uploads only an rpm whose bytes
