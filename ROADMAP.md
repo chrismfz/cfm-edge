@@ -129,26 +129,36 @@ Unix sockets (bridge, sslcollector, ingest, clamd) need no write path.
 
 ### Next
 
-- [ ] **Narrow `/run`**: move the pid and lock to `/run/cfm-edge/`
-  (`RuntimeDirectory=cfm-edge`, `--pid-path`/`--lock-path` in the spec, CFM's
-  `pid` line and `PIDFile=`), then `ReadWritePaths=` names only that.
-- [ ] **Round 2**, each measured on its own as above:
-  - `SystemCallFilter=@system-service` + `SystemCallArchitectures=native`,
-    first with `SystemCallLog=` / `SystemCallErrorNumber=EPERM` on the
-    canary so a missing call shows in the log instead of killing a worker;
-  - `ProtectProc=invisible` (EL9+; check that no Lua reads `/proc` of
-    another process);
-  - `UMask=0027`.
-- [ ] Drop capabilities that turn out unneeded (`CAP_DAC_OVERRIDE` if every
-  file the master opens is root's; `CAP_NET_BIND_SERVICE` while every
-  listener is above 1024).
-- [ ] `MemoryDenyWriteExecute=yes` **only if LuaJIT's JIT is off**. The JIT
-  writes machine code at run time, which is exactly what this forbids.
-  Measure whether CFM's Lua needs the JIT before choosing one or the other.
-- [ ] Once the rpm carries round 1, remove the test drop-in
-  `zz-hardening.conf` from virgo and rigel (it duplicates the unit).
+Ranked 2026-11-22 by win against risk. "Loud" means a mistake fails `-t`,
+the start or a test with the path or directive named; "silent" means it
+fails later, somewhere else, with nothing pointing back here. Silent risks
+are what we avoid.
 
-## 3. Compile hardening
+- [ ] **Narrow `/run`.** Win: real. The master is root, and `/run/systemd/system`
+  is a unit load path, so a compromised master with `/run` writable could
+  write an unsandboxed unit there. Measured on virgo: the edge writes only
+  its pid under `/run`. `/run/cfm/*.sock` and `/var/run/sslcollector.sock`
+  are only connected to, which a read-only mount allows. Risk: loud (a pid
+  path the sandbox refuses fails the start), but it crosses repos: the
+  unit's `PIDFile=`, CFM's `pid` line and the logrotate `postrotate` must
+  agree. Plan: `RuntimeDirectory=cfm-edge` and the new pid path accepted
+  first, while `/run` stays writable; CFM's conf moves; only then
+  `ReadWritePaths=` drops `/run`.
+- [ ] **`UMask=0027`, and `/var/log/cfm-edge` at 0750.** Win: real. Today the
+  logs are 0644 in a 0755 dir: on virgo, 352 accounts with a shell could
+  read every visitor's IP and full URL, query strings included (reset
+  tokens). CageFS hides `/var/log` from jailed users, but nothing in the
+  package relies on that. Risk: low and loud. A non-root reader of the logs
+  would get EACCES; CFM's daemon is root. Canary first.
+- [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024) and check
+  `CAP_DAC_OVERRIDE`. Win: small (root without them still owns almost
+  everything). Risk: loud (bind or open fails at `-t`/start). One canary
+  pass, together with:
+- [ ] `ProtectProc=invisible` (EL9+; EL8's systemd ignores it). Win: small, a
+  worker no longer sees other users' processes. Risk: low; check first that
+  no edge Lua reads another process's `/proc`.
+
+## 3. Compile hardening## 3. Compile hardening
 
 **Measure before adding.** The spec already passes `%{optflags}` and
 `%{build_ldflags}` (redhat-rpm-config) to nginx and LuaJIT. On EL8 these
@@ -207,8 +217,13 @@ Done (spec `--without-*`):
   CVE-2026-123634 path entirely.
 
 - [ ] Review what remains against "a module goes in when CFM needs it"
-  (CLAUDE.md): `threads`, `file-aio`, `stub_status`, `auth_request`,
-  `realip`, `compat`. Keep each only if CFM's config or Go uses it.
+  (CLAUDE.md). Read on virgo's live config, 2026-11-22: `auth_request` (2
+  uses) and `realip` are used; no `aio`, `thread_pool` or `stub_status`, so
+  `--with-threads`, `--with-file-aio` and `stub_status` are candidates to
+  drop. `compat` stays while a dynamic module (Brotli, §7) is possible.
+  Win: small (less code). Risk: loud, since CFM's real config runs `-t` in
+  `make test-all` (cfm-conf). CFM's Go, Lua, confs and scripts use none of
+  the three either (grep, 2026-11-22).
 
 ## 5. Runtime
 
@@ -285,10 +300,30 @@ before and after on the same traffic; nothing ships on reasoning alone.
 
 ## Decided
 
+- [decided, 2026-11-22] **No seccomp syscall filter (`SystemCallFilter=`).**
+  - **Why:** the win is small on top of what the unit already has
+    (`NoNewPrivileges`, 7 capabilities, `ProtectKernel*`,
+    `RestrictNamespaces`, `RestrictAddressFamilies`: most dangerous calls,
+    such as mount, module loading, reboot or the clock, already fail for lack
+    of a capability). The failure mode is silent: a call outside the list
+    returns EPERM, which systemd does not audit, so a CFM change months later
+    (a new FFI call, a module, an nginx feature) breaks in one code path with
+    "Operation not permitted" and nothing points at the unit. Half the fleet
+    (EL8, systemd 239) cannot measure in log mode, so it would be enforced
+    blind there, and the list needs re-measuring at every glibc, kernel or
+    nginx change.
+  - **How it was tried:** a measurement-only drop-in
+    (`SystemCallLog=~@system-service`) on the four EL9/EL10 nodes; logging
+    confirmed working on rigel (audit `type=SECCOMP`, `code=0x7ffc0000`;
+    `ausearch` does not show these, `grep` the audit log). Removed the same
+    day, before it took effect. Reopen only with a concrete exploit class it
+    would stop that the capabilities do not.
+- [decided, 2026-11-22] **No `MemoryDenyWriteExecute=`.** It needs LuaJIT's JIT
+  (and PCRE's) off, a CPU cost on every request of the WAF/challenge logic,
+  to stop W+X memory, while the JIT itself needs exactly that. Reopen only
+  with a measurement that the JIT gains nothing on CFM's Lua.
 - Hardening is a canary-first change, never a fleet-wide flip: one unit
   directive too many takes every site on a node down at once.
-- The JIT and `MemoryDenyWriteExecute` are a pair: choose one after
-  measuring, never both by assumption.
 - [decided, 2026-11-21] No `buffer=`/`flush=` on the access logs.
   - The busiest node writes about 30 requests/s (2.7M a day), so the
     `write()` calls it would save are negligible.
