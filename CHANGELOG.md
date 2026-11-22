@@ -45,6 +45,27 @@ Fixed / Hardened / Security / Removed**.
   - The transaction never fails because of it.
 
 ### Fixed
+- **The post-upgrade restart no longer collides with cfm's own restarts.**
+  cfm's rpm restarts its daemon in its `%post` (before this script), and its
+  old package's `%postun` asks again: on EL9/EL10 that second restart is
+  queued to the END of the transaction (the unit is marked
+  `Markers=needs-restart`), so it came while this script ran (rigel,
+  2026-11-23: the daemon put the panel DNAT back as it started, `panel off`
+  never read OFF, and the edge was left unrestarted, safely). Now:
+  - a cfm unit marked needs-restart hands the restart to a transient systemd
+    unit, which runs after the transaction, once cfm has restarted
+    (`journalctl -t cfm-edge-upgrade`);
+  - a cfm daemon that is starting, stopping, or has run less than 30 s is
+    waited for (its firewall setup), at most 10 minutes;
+  - one run at a time (`/run/cfm-edge-upgrade.lock`), so a deferred run, a
+    second transaction or a run by hand cannot turn the DNAT off and on
+    across each other's restart;
+  - a signal after the DNAT was taken out (the unit stopped, a reboot right
+    after yum) puts it back, unless the new edge does not serve, in which
+    case it stays off with an ERROR, as before;
+  - an off that succeeded but does not read OFF is tried again, and a failed
+    CLI call is logged by its error line (an nft failure prints its refused
+    script after the error, which is all the log showed on virgo).
 - **The post-upgrade restart no longer leaves the web DNAT off when one
   `cfm edge on` fails.** The same yum transaction often upgrades cfm too, and
   its post-install restarts the cfm daemon, whose firewall setup on EL8 holds

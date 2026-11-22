@@ -43,6 +43,12 @@ WAIT="${CFM_EDGE_UPGRADE_WAIT:-30}"   # seconds to wait for the new edge to serv
 # one-shot `cfm edge on` in that window fails (earth, 2026-11-22: one try,
 # the web DNAT stayed off for 53 minutes). 10+20+30+60 s covers it.
 RETRY_DELAYS="${CFM_EDGE_RETRY_DELAYS:-10 20 30 60}"
+# The cfm daemon must have run this long before the DNAT is touched: a daemon
+# that just started is still setting up the firewall (EnsureBase, the ports
+# policy: 10-20 s on EL8).
+SETTLE="${CFM_EDGE_CFM_SETTLE:-30}"
+DEFER_MAX="${CFM_EDGE_DEFER_MAX:-600}"   # longest wait for cfm's restart / start
+LOCK="${CFM_EDGE_LOCK:-/run/cfm-edge-upgrade.lock}"
 UNIT=cfm-edge.service
 
 say() {
@@ -53,18 +59,72 @@ say() {
 cfm_run() {
     if command -v timeout >/dev/null 2>&1; then timeout 60 "$CFM" "$@"; else "$CFM" "$@"; fi
 }
+# why OUTPUT: the CLI's error lines, else its last two (an nft failure prints
+# the refused script after the error: its tail is `} } );`, virgo 2026-11-23).
+why() {
+    w="$(printf '%s\n' "$1" | grep -iE 'error|fail|refus|timed out|denied|busy' | head -2 | tr '\n' ' ')"
+    [ -n "$w" ] || w="$(printf '%s\n' "$1" | tail -2 | tr '\n' ' ')"
+    printf '%s' "$w"
+}
 # cfm_retry ARGS...: `cfm ARGS`, tried again after each of RETRY_DELAYS while
-# it fails. Every failure is logged with the CLI's own last lines: they used
-# to go to /dev/null, so a failed `cfm edge on` said nothing about why.
+# it fails. Every failure is logged with the CLI's own error: it used to go
+# to /dev/null, so a failed `cfm edge on` said nothing about why.
 cfm_retry() {
     out="$(cfm_run "$@" 2>&1)" && return 0
     for d in $RETRY_DELAYS; do
-        say "cfm $* failed ($(printf '%s\n' "$out" | tail -2 | tr '\n' ' ')); retrying in ${d}s (the cfm daemon may still be starting)"
+        say "cfm $* failed ($(why "$out")); retrying in ${d}s (the cfm daemon may still be starting)"
         sleep "$d"
         out="$(cfm_run "$@" 2>&1)" && return 0
     done
-    say "WARNING: cfm $* still failing after retries: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+    say "WARNING: cfm $* still failing after retries: $(why "$out")"
     return 1
+}
+
+# The cfm daemon restarting in the same yum transaction. cfm's rpm restarts
+# it in its %post (before any %posttrans, so before this script, whatever
+# order rpm installs the two in), and its old package's %postun asks again:
+#   - EL8 (systemd 239): `systemctl try-restart`, right there, also before us;
+#   - EL9/EL10: systemd-update-helper marks the unit (Markers=needs-restart)
+#     and systemd restarts it at the END of the transaction, after every
+#     %posttrans, so after (or during) this script.
+# rigel, 2026-11-23 (EL9): that second restart came while `cfm edge panel
+# off` ran; the daemon put the panel DNAT back as it started, the off never
+# read OFF, and the edge was not restarted.
+cfm_pid() { systemctl show cfm.service -p MainPID --value 2>/dev/null; }
+# cfm_pending: a restart of the cfm daemon is still to come after this
+# transaction (EL9+: the unit carries the needs-restart marker).
+cfm_pending() {
+    systemctl show cfm.service -p Markers --value 2>/dev/null | grep -qw needs-restart
+}
+# cfm_age: seconds the cfm daemon has run (a large number when it does not).
+cfm_age() {
+    pid="$(cfm_pid)"
+    case "$pid" in "" | 0) echo 999999; return ;; esac
+    a="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+    echo "${a:-999999}"
+}
+# settle: wait while the cfm daemon is starting, stopping, or has run less
+# than SETTLE seconds (it is setting up the firewall: EnsureBase, the ports
+# policy), at most DEFER_MAX. A daemon that is not running (and not about to)
+# is not waited for.
+settle() {
+    i=0
+    said=""
+    while [ "$i" -lt "$DEFER_MAX" ]; do
+        case "$(systemctl is-active cfm.service 2>/dev/null)" in
+            activating | deactivating | reloading) w=2 ;;
+            active)
+                a="$(cfm_age)"
+                [ "$a" -lt "$SETTLE" ] 2>/dev/null || return 0
+                w=$((SETTLE - a)) ;;
+            *) return 0 ;;
+        esac
+        [ -n "$said" ] || say "the cfm daemon is starting (or started less than ${SETTLE}s ago): waiting for its firewall setup"
+        said=1
+        sleep "$w"
+        i=$((i + w))
+    done
+    say "WARNING: the cfm daemon did not settle within ${DEFER_MAX}s; going on"
 }
 
 systemctl is-active --quiet "$UNIT" 2>/dev/null || exit 0
@@ -73,6 +133,37 @@ if [ -e "$OPTOUT" ]; then
     say "$OPTOUT exists: not restarting; restart cfm-edge yourself (cfm edge off first if it is in the path)"
     exit 0
 fi
+
+# cfm's restart is still to come, after this transaction: waiting here would
+# wait for something that runs after us. Hand the restart to a transient
+# unit, which runs after the transaction, once the daemon has restarted.
+if [ "${1:-}" != --deferred ] && cfm_pending; then
+    say "the cfm daemon is to be restarted at the end of this yum run: cfm-edge will be restarted after it, in the background (journalctl -t cfm-edge-upgrade)"
+    if command -v systemd-run >/dev/null 2>&1 \
+        && systemd-run --no-block --quiet --collect --unit "cfm-edge-upgrade-restart-$$" "$0" --deferred >/dev/null 2>&1; then
+        exit 0
+    fi
+    setsid nohup "$0" --deferred >/dev/null 2>&1 </dev/null &
+    exit 0
+fi
+
+# One run at a time (a deferred run and a second transaction, or a run by
+# hand): two would turn the DNAT off and on across each other's restart.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK"
+    if ! flock -w "$DEFER_MAX" 9; then
+        say "WARNING: another cfm-edge upgrade restart still holds $LOCK; NOT restarting. Restart cfm-edge out of the path yourself."
+        exit 0
+    fi
+fi
+if [ "${1:-}" = --deferred ]; then
+    i=0
+    while cfm_pending && [ "$i" -lt "$DEFER_MAX" ]; do sleep 5; i=$((i + 5)); done
+    if cfm_pending; then
+        say "WARNING: the cfm daemon was not restarted within ${DEFER_MAX}s; going on with it as it is"
+    fi
+fi
+settle
 
 systemctl daemon-reload 2>/dev/null || :
 
@@ -181,15 +272,49 @@ back_in() {
 }
 
 say "cfm-edge is in the path (web DNAT $web_on, panel DNAT $panel_on): taking it out, restarting, putting it back"
-off_rc=0
-if [ "$web_on" = 1 ]; then cfm_retry edge off || off_rc=1; fi
-if [ "$panel_on" = 1 ]; then cfm_retry edge panel off || off_rc=1; fi
-st="$(cfm_run edge 2>&1)"
-# Restart only on a positive OFF for both: never while it may take traffic.
-if [ "$off_rc" != 0 ] || [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')" 'Web DNAT')" != 0 ] \
-    || [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Panel DNAT:')" 'Panel DNAT')" != 0 ]; then
+# Off, then read back OFF for both. An off that succeeded but does not read
+# OFF (the daemon putting the DNAT back as it starts) is tried again; an off
+# that keeps failing was already retried by cfm_retry.
+reads_off() {
+    [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')" 'Web DNAT')" = 0 ] \
+        && [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Panel DNAT:')" 'Panel DNAT')" = 0 ]
+}
+take_out() {
+    off_rc=0
+    if [ "$web_on" = 1 ]; then cfm_retry edge off || off_rc=1; fi
+    if [ "$panel_on" = 1 ]; then cfm_retry edge panel off || off_rc=1; fi
+    st="$(cfm_run edge 2>&1)"
+}
+# From the first off on, a signal (the transient unit stopped, a reboot after
+# yum returned) must not leave the edge out of the path: `cfm edge off`
+# persists OFF, so nothing else would put it back.
+interrupted() {
+    trap '' TERM INT HUP
+    # Past the restart, an edge that does not serve must not be put back in
+    # the path (that would take the sites down): the DNAT stays off, as below.
+    if command -v healthy >/dev/null 2>&1 && ! healthy; then
+        say "ERROR: interrupted after the restart, and cfm-edge does not serve: the DNAT STAYS OFF (the origin serves, without WAF). Fix the edge, then: cfm edge on${web_args:+ $web_args}"
+        exit 0
+    fi
+    say "interrupted with the DNAT taken out: putting it back"
     back_in
-    say "WARNING: the DNAT did not turn off ($(printf '%s\n' "$st" | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')); NOT restarting, put back as it was. Restart cfm-edge out of the path yourself."
+    exit 0
+}
+trap interrupted TERM INT HUP
+take_out
+if [ "$off_rc" = 0 ] && ! reads_off; then
+    for d in $RETRY_DELAYS; do
+        say "the off succeeded but the DNAT does not read OFF ($(printf '%s\n' "$st" | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')); again in ${d}s"
+        sleep "$d"
+        take_out
+        { [ "$off_rc" = 0 ] && ! reads_off; } || break
+    done
+fi
+# Restart only on a positive OFF for both: never while it may take traffic.
+if [ "$off_rc" != 0 ] || ! reads_off; then
+    if back_in; then put="put back as it was"; else put="putting it back FAILED (warnings above)"; fi
+    trap - TERM INT HUP
+    say "WARNING: the DNAT did not turn off ($(printf '%s\n' "$st" | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')); NOT restarting, $put. Restart cfm-edge out of the path yourself."
     exit 0
 fi
 
@@ -217,12 +342,14 @@ if ! wait_healthy; then
         systemctl start "$UNIT" >/dev/null 2>&1 || :
     fi
     if ! wait_healthy; then
+        trap - TERM INT HUP
         say "ERROR: cfm-edge does not serve after the upgrade. The DNAT STAYS OFF: the sites are served by the origin directly, without WAF/challenge. See journalctl -u cfm-edge and /var/log/cfm-edge/error.log, then: systemctl restart cfm-edge && cfm edge on${web_args:+ $web_args}$( [ "$panel_on" = 1 ] && echo ' && cfm edge panel on')"
         exit 0
     fi
 fi
 
 back_in
+trap - TERM INT HUP
 # Put back means read back ON: a DNAT that was on and reads anything else now
 # is an edge out of the path (no WAF), which must not end in "restarted".
 st="$(cfm_run edge 2>&1)"

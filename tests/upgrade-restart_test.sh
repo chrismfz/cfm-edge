@@ -42,17 +42,36 @@ mkdir -p "$W/bin"
 #   onfails     a number: `cfm edge on` fails that many times first (the cfm
 #               daemon restarting in the same yum transaction holds nft)
 #   offfails    a number: `cfm edge off` fails that many times first
+#   panelbackn  a number: `cfm edge panel off` succeeds but the panel stays ON
+#               that many times (the cfm daemon putting it back as it starts)
+#   cfmage      a number: the cfm daemon (pid 4242) has run that many seconds
+#   cfmstate    what `systemctl is-active cfm.service` prints (default active);
+#               the first sleep turns "activating" into "active"
+#   cfmmarker   cfm.service carries Markers=needs-restart (EL9+: its restart
+#               comes at the end of the transaction)
+#   cfmrestarts the first sleep restarts it (the marker clears)
+#   deferred    run the script as its transient unit does (--deferred)
+#   lockheld    another run holds the lock (and CFM_EDGE_DEFER_MAX is 1)
+#   killonrestart  the script gets SIGTERM during the restart
 cat >"$W/bin/systemctl" <<'EOF'
 #!/bin/sh
 S="$STUB_STATE"; echo "systemctl $*" >>"$S/calls"
 case "$1" in
-  is-active) [ "$(cat "$S/unit")" = active ] ;;
+  is-active) case "$*" in
+               *cfm.service*) st="$(cat "$S/cfmstate" 2>/dev/null || echo active)"; echo "$st"; [ "$st" = active ] ;;
+               *) [ "$(cat "$S/unit")" = active ] ;;
+             esac ;;
   daemon-reload) : ;;
+  show) case "$*" in
+          *"cfm.service -p Markers"*) [ -e "$S/cfmmarker" ] && echo needs-restart ;;
+          *"cfm.service -p MainPID"*) if [ -e "$S/cfmage" ]; then echo 4242; else echo 0; fi ;;
+        esac ;;
   cat) printf '[Service]\nProtectSystem=strict\nReadWritePaths=/var/log/cfm-edge /run\nNoNewPrivileges=yes\nProtectClock=yes\n' ;;
   restart|start) if [ -e "$S/startfail" ]; then echo inactive >"$S/unit"; exit 1; fi
                  # The restart must never happen while cfm-edge is in the path.
                  if [ "$(cat "$S/enginename")" = cfm-edge ] && ! { grep -qx OFF "$S/web" && grep -qx OFF "$S/panel"; }; then
                    echo "RESTART-WHILE-IN-PATH" >>"$S/calls"; fi
+                 if [ -e "$S/killonrestart" ] && [ ! -e "$S/killed" ]; then : >"$S/killed"; kill -TERM "$PPID"; fi
                  echo active >"$S/unit" ;;
 esac
 EOF
@@ -61,6 +80,7 @@ cat >"$W/bin/systemd-run" <<'EOF'
 S="$STUB_STATE"; echo "systemd-run $*" >>"$S/calls"
 [ -e "$S/nosdrun" ] && { echo "Failed to connect to bus" >&2; exit 1; }
 case "$*" in
+  *--deferred*) exit 0 ;;   # the handoff to a transient unit
   *ProtectClock*/bin/true) exit 1 ;;   # as EL8: refused transiently
   */bin/true) exit 0 ;;
   *" -t -q") [ -e "$S/sandboxbad" ] && { echo "nginx: [emerg] open() failed (30: Read-only file system)" >&2; exit 1; }
@@ -90,9 +110,12 @@ case "$*" in
               [ -e "$S/offrc" ] && { echo OFF >"$S/web"; exit 1; }
               [ -e "$S/offstuck" ] || echo OFF >"$S/web" ;;
   "edge on"*) if [ -s "$S/onfails" ] && [ "$(cat "$S/onfails")" -gt 0 ]; then
-                echo $(( $(cat "$S/onfails") - 1 )) >"$S/onfails"; echo "Error: nft: timed out (slot busy)" >&2; exit 1; fi
+                echo $(( $(cat "$S/onfails") - 1 )) >"$S/onfails"; echo "Error: nft: timed out (slot busy)" >&2
+                printf '  add rule inet cfm input ct original ip daddr 1.2.3.4\n  } }\n  } } );\n' >&2; exit 1; fi
               echo ON >"$S/web" ;;
-  "edge panel off") [ -e "$S/offstuck" ] || [ -e "$S/panelstuck" ] || echo OFF >"$S/panel" ;;
+  "edge panel off") if [ -s "$S/panelbackn" ] && [ "$(cat "$S/panelbackn")" -gt 0 ]; then
+                      echo $(( $(cat "$S/panelbackn") - 1 )) >"$S/panelbackn"; exit 0; fi
+                    [ -e "$S/offstuck" ] || [ -e "$S/panelstuck" ] || echo OFF >"$S/panel" ;;
   "edge panel on") echo ON >"$S/panel" ;;
 esac
 EOF
@@ -113,7 +136,18 @@ echo "curl $*" >>"$STUB_STATE/calls"
 if [ "$(cat "$STUB_STATE/unit")" = active ] && [ ! -e "$STUB_STATE/notserving" ] && [ ! -e "$STUB_STATE/noanswer" ]; then printf 200; else printf 000; fi
 EOF
 printf '#!/bin/sh\nexit 0\n' >"$W/bin/logger"
-printf '#!/bin/sh\nexit 0\n' >"$W/bin/sleep"
+cat >"$W/bin/sleep" <<'STUB'
+#!/bin/sh
+echo "sleep $*" >>"$STUB_STATE/calls"
+# cfm's restart, later in the same transaction, happens while the deferred run waits
+[ -e "$STUB_STATE/cfmrestarts" ] && rm -f "$STUB_STATE/cfmmarker"
+[ "$(cat "$STUB_STATE/cfmstate" 2>/dev/null)" = activating ] && echo active >"$STUB_STATE/cfmstate"
+exit 0
+STUB
+cat >"$W/bin/ps" <<'STUB'
+#!/bin/sh
+cat "$STUB_STATE/cfmage" 2>/dev/null || echo 999
+STUB
 chmod +x "$W/bin/"*
 
 n=0
@@ -128,14 +162,17 @@ run() {
     ambiguous) echo "WARNING: more than one of angie, openresty, cfm-edge is active" >"$S/engine" ;;
     *) echo "$engine (running)" >"$S/engine" ;;
   esac
-  local cfmbin="$W/bin/cfm" k
+  local cfmbin="$W/bin/cfm" k arg="" defermax=600
   for k in "$@"; do
     case "$k" in *=*) echo "${k#*=}" >"$S/${k%%=*}" ;; *) : >"$S/$k" ;; esac   # knob=N sets a count
     if [ "$k" = nocfm ]; then cfmbin="$W/does-not-exist/cfm"; fi
+    if [ "$k" = deferred ]; then arg=--deferred; fi
+    if [ "$k" = lockheld ]; then defermax=1; fi
   done
+  if [ -e "$S/lockheld" ]; then flock "$S/lock" sleep 5 & sleep 0.3; fi
   set +e
   OUT="$(env -i PATH="$W/bin:/usr/bin:/bin" STUB_STATE="$S" CFM_EDGE_BIN="$W/bin/cfm-edge" CFM_BIN="$cfmbin" \
-         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 sh "$SCRIPT" 2>&1)"
+         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 CFM_EDGE_LOCK="$S/lock" CFM_EDGE_DEFER_MAX="$defermax" sh "$SCRIPT" $arg 2>&1)"
   RC=$?
   set -e
   CALLS="$(cat "$S/calls")"
@@ -248,4 +285,41 @@ if grep -qF "restarted; " <<<"$OUT"; then fail "$CURRENT: reported a plain resta
 run "cfm edge off fails once, then works" active ON ON cfm-edge offfails=1
 has "systemctl restart"; order "cfm edge off" "systemctl restart"; state web ON; state panel ON; says "retrying in"
 
-echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off, a failing cfm edge on/off retried and a DNAT not back reported as an ERROR)"
+# rigel, 2026-11-23 (EL9): the old cfm package's %postun marks cfm.service
+# needs-restart, and systemd restarts it at the end of the transaction, after
+# this script: the daemon put the panel DNAT back as it started, the off never
+# read OFF, and the edge was not restarted.
+run "cfm's restart still to come (needs-restart): handed to a transient unit" active ON ON cfm-edge cfmmarker
+has "systemd-run --no-block --quiet --collect --unit cfm-edge-upgrade-restart-"; has " --deferred"
+hasnt "cfm edge off"; hasnt "systemctl restart"; state web ON; state panel ON; says "in the background"
+
+run "the deferred run waits for cfm's restart, then restarts the edge" active ON ON cfm-edge cfmmarker cfmrestarts deferred
+has "sleep 5"; order "sleep 5" "cfm edge off"; has "systemctl restart"; state web ON; state panel ON
+hasnt "systemd-run --no-block"
+
+run "the cfm daemon between stop and start: wait until it runs" active ON ON cfm-edge cfmstate=activating
+says "the cfm daemon is starting"; has "sleep 2"; order "sleep 2" "cfm edge off"; has "systemctl restart"; state web ON
+
+run "another run holds the lock: no restart" active ON ON cfm-edge lockheld
+says "another cfm-edge upgrade restart still holds"; hasnt "cfm edge off"; hasnt "systemctl restart"; state web ON
+
+run "SIGTERM during the restart, the new edge serves: the DNAT goes back" active ON ON cfm-edge killonrestart
+says "interrupted with the DNAT taken out: putting it back"; state web ON; state panel ON
+
+run "SIGTERM during the restart, the new edge does not serve: the DNAT stays off" active ON ON cfm-edge killonrestart notserving
+says "interrupted after the restart, and cfm-edge does not serve"; state web OFF; state panel OFF
+
+run "a cfm daemon 10 s old: wait for its firewall setup" active ON ON cfm-edge cfmage=10
+says "the cfm daemon is starting (or started less than 30s ago)"; has "sleep 20"; order "sleep 20" "cfm edge off"; has "systemctl restart"; state web ON
+
+run "a cfm daemon that has run long: no wait" active ON ON cfm-edge cfmage=500
+hasnt "sleep 20"; hasnt "the cfm daemon is starting"; has "systemctl restart"
+
+run "panel off succeeds but reads ON once (the daemon put it back)" active ON ON cfm-edge panelbackn=1
+says "does not read OFF"; has "systemctl restart"; state web ON; state panel ON
+[ "$(grep -c '^cfm edge panel off' <<<"$CALLS")" = 2 ] || fail "$CURRENT: want 2 panel offs, got $(grep -c '^cfm edge panel off' <<<"$CALLS")"
+
+run "a CLI error is logged by its error line, not the script's tail" active ON ON cfm-edge onfails=1
+says "Error: nft: timed out (slot busy)"
+
+echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off, a failing cfm edge on/off retried and a DNAT not back reported as an ERROR, an off that does not read OFF retried, a cfm daemon just started waited for, its restart still to come handed to a transient unit, one run at a time, a signal after the off puts the DNAT back only to an edge that serves)"
