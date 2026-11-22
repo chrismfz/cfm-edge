@@ -181,8 +181,13 @@ already include:
   Now passed through `--with-openssl-opt`: `-fstack-protector-strong
   -fstack-clash-protection -fcf-protection -D_FORTIFY_SOURCE=2`, OpenSSL's
   assembly kept on. `%check` enforces the flags and a nonzero share.
-  - [ ] Handshake CPU before/after on a canary (§7): the hot paths are
-    assembly, so the cost is expected to be small; measure it anyway.
+  - [x] Handshake CPU before/after on virgo (2026-11-22, live node, RSA-2048
+    cert, TLS 1.3 + X25519): worker CPU per new handshake, 3 rounds of 20 s
+    with 8 `openssl s_time -new` clients, an idle window of the same length
+    subtracted. Before 1.378 / 1.391 / 1.373 ms (mean 1.381), after 1.402 /
+    1.427 / 1.355 ms (mean 1.395): +1%, inside the after-rounds' own ±3%
+    spread. No measurable cost. Script: `/root/cfm-edge-hardening/hs-bench.sh`
+    on virgo.
 - [ ] `_FORTIFY_SOURCE=3` once EL8 leaves the fleet (the build moves to the
   next-oldest EL, CLAUDE.md).
 - [ ] An `-fzero-call-used-regs` / `-ftrivial-auto-var-init=zero` check:

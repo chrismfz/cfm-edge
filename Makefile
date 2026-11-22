@@ -148,7 +148,8 @@ doctor: ## Does this host have what a build needs?
 	  command -v $$t >/dev/null && echo "✓ $$t" || { echo "✗ $$t   (build: make sources / check-deps)"; miss=1; }; done; \
 	for t in ssh rsync; do \
 	  command -v $$t >/dev/null && echo "✓ $$t" || echo "• $$t   (only for make sync)"; done; \
-	command -v shellcheck >/dev/null && echo "✓ shellcheck" || echo "• shellcheck   (only for make lint)"; \
+	command -v shellcheck >/dev/null && echo "✓ shellcheck" \
+	  || { echo "✗ shellcheck   (make lint / make release; EL: dnf install ShellCheck, from EPEL)"; miss=1; }; \
 	for u in https://nginx.org/download/ https://quay.io https://repo.almalinux.org/almalinux/; do \
 	  curl -fsI -o /dev/null --max-time 10 "$$u" && echo "✓ reach $$u" || { echo "✗ reach $$u"; miss=1; }; done; \
 	git ls-remote https://github.com/openresty/luajit2 HEAD >/dev/null 2>&1 \
@@ -158,7 +159,7 @@ doctor: ## Does this host have what a build needs?
 	  && echo "✓ GitHub release downloads (OpenSSL)" || { echo "✗ GitHub release downloads (OpenSSL tarball)"; miss=1; }; \
 	cfm="$(or $(CFM_DIR),../cfm)"; [ -f "$$cfm/configs/openresty.conf" ] && echo "✓ cfm checkout: $$cfm" \
 	  || { echo "✗ no cfm checkout at $$cfm (clone chrismfz/cfm there, or CFM_DIR=): test-all runs CFM's real edge config"; miss=1; }; \
-	[ $$miss = 0 ] && echo "ready: make package test-all   (ENGINE=$(ENGINE))" || { echo "missing pieces above"; exit 1; }
+	[ $$miss = 0 ] && echo "ready: make release   (ENGINE=$(ENGINE))" || { echo "missing pieces above"; exit 1; }
 
 # Pins: `check` only reports; `update` rewrites versions.env (exit 3 = bumped,
 # 4 = an nginx SECURITY fix: both are success here). Review

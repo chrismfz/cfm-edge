@@ -89,8 +89,9 @@ and verifies sources and drives those containers:
 - A cfm checkout next to this repo (`../cfm`) or `CFM_DIR=`, for `test-all`.
 - Network to nginx.org, github.com (git over HTTPS + release downloads),
   quay.io and the AlmaLinux mirrors.
-- Optional: `ssh` + `rsync` and a key for repo.nixpal.com (`make sync`),
-  and `shellcheck` (`make lint`).
+- `shellcheck` (`make lint`, which `make release` runs first; EL: `dnf
+  install ShellCheck` from EPEL).
+- Optional: `ssh` + `rsync` and a key for repo.nixpal.com (`make sync`).
 - About 3 GB of disk for images and the build tree.
 
 On a new VM, `make doctor` checks all of this and names what is missing.
