@@ -43,6 +43,12 @@ WAIT="${CFM_EDGE_UPGRADE_WAIT:-30}"   # seconds to wait for the new edge to serv
 # one-shot `cfm edge on` in that window fails (earth, 2026-11-22: one try,
 # the web DNAT stayed off for 53 minutes). 10+20+30+60 s covers it.
 RETRY_DELAYS="${CFM_EDGE_RETRY_DELAYS:-10 20 30 60}"
+# The cfm daemon must have run this long before the DNAT is touched: a daemon
+# that just started is still setting up the firewall (EnsureBase, the ports
+# policy: 10-20 s on EL8).
+SETTLE="${CFM_EDGE_CFM_SETTLE:-30}"
+DEFER_MAX="${CFM_EDGE_DEFER_MAX:-600}"   # deferred run: longest wait for cfm's restart
+PROC="${CFM_EDGE_PROC:-/proc}"
 UNIT=cfm-edge.service
 
 say() {
@@ -53,18 +59,47 @@ say() {
 cfm_run() {
     if command -v timeout >/dev/null 2>&1; then timeout 60 "$CFM" "$@"; else "$CFM" "$@"; fi
 }
+# why OUTPUT: the CLI's error lines, else its last two (an nft failure prints
+# the refused script after the error: its tail is `} } );`, virgo 2026-11-23).
+why() {
+    w="$(printf '%s\n' "$1" | grep -iE 'error|fail|refus|timed out|denied|busy' | head -2 | tr '\n' ' ')"
+    [ -n "$w" ] || w="$(printf '%s\n' "$1" | tail -2 | tr '\n' ' ')"
+    printf '%s' "$w"
+}
 # cfm_retry ARGS...: `cfm ARGS`, tried again after each of RETRY_DELAYS while
-# it fails. Every failure is logged with the CLI's own last lines: they used
-# to go to /dev/null, so a failed `cfm edge on` said nothing about why.
+# it fails. Every failure is logged with the CLI's own error: it used to go
+# to /dev/null, so a failed `cfm edge on` said nothing about why.
 cfm_retry() {
     out="$(cfm_run "$@" 2>&1)" && return 0
     for d in $RETRY_DELAYS; do
-        say "cfm $* failed ($(printf '%s\n' "$out" | tail -2 | tr '\n' ' ')); retrying in ${d}s (the cfm daemon may still be starting)"
+        say "cfm $* failed ($(why "$out")); retrying in ${d}s (the cfm daemon may still be starting)"
         sleep "$d"
         out="$(cfm_run "$@" 2>&1)" && return 0
     done
-    say "WARNING: cfm $* still failing after retries: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+    say "WARNING: cfm $* still failing after retries: $(why "$out")"
     return 1
+}
+
+# The cfm daemon restarting in the same yum transaction. In cfm's own
+# scriptlets, before or after this one, depending on the order rpm installs
+# the two (rigel, 2026-11-23: cfm-edge first, so this script ran while cfm's
+# restart was still to come; the daemon put the panel DNAT back on as it
+# started, the off never read OFF, and the edge was not restarted).
+cfm_pid() { systemctl show cfm.service -p MainPID --value 2>/dev/null; }
+# cfm_pending: the cfm package was replaced, and its daemon still runs the
+# old binary (its restart is still to come).
+cfm_pending() {
+    pid="$(cfm_pid)"
+    case "$pid" in "" | 0) return 1 ;; esac
+    case "$(readlink "$PROC/$pid/exe" 2>/dev/null)" in *" (deleted)") return 0 ;; esac
+    return 1
+}
+# cfm_age: seconds the cfm daemon has run (a large number when it does not).
+cfm_age() {
+    pid="$(cfm_pid)"
+    case "$pid" in "" | 0) echo 999999; return ;; esac
+    a="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+    echo "${a:-999999}"
 }
 
 systemctl is-active --quiet "$UNIT" 2>/dev/null || exit 0
@@ -72,6 +107,32 @@ systemctl is-active --quiet "$UNIT" 2>/dev/null || exit 0
 if [ -e "$OPTOUT" ]; then
     say "$OPTOUT exists: not restarting; restart cfm-edge yourself (cfm edge off first if it is in the path)"
     exit 0
+fi
+
+# cfm's restart is still to come in this transaction: waiting here would wait
+# for something that runs after us. Hand the restart to a transient unit,
+# which runs after the transaction, once the daemon has restarted.
+if [ "${1:-}" != --deferred ] && cfm_pending; then
+    say "the cfm daemon still runs the binary this transaction replaced (its restart comes later in this yum run): cfm-edge will be restarted after it, in the background (journalctl -t cfm-edge-upgrade)"
+    if command -v systemd-run >/dev/null 2>&1 \
+        && systemd-run --no-block --quiet --collect --unit "cfm-edge-upgrade-restart-$$" "$0" --deferred >/dev/null 2>&1; then
+        exit 0
+    fi
+    setsid nohup "$0" --deferred >/dev/null 2>&1 </dev/null &
+    exit 0
+fi
+if [ "${1:-}" = --deferred ]; then
+    i=0
+    while cfm_pending && [ "$i" -lt "$DEFER_MAX" ]; do sleep 5; i=$((i + 5)); done
+    if cfm_pending; then
+        say "WARNING: the cfm daemon was not restarted within ${DEFER_MAX}s; going on with it as it is"
+    fi
+fi
+# A daemon that just started is still setting up the firewall: wait for it.
+a="$(cfm_age)"
+if [ "$a" -lt "$SETTLE" ]; then
+    say "the cfm daemon started ${a}s ago: waiting $((SETTLE - a))s for its firewall setup"
+    sleep $((SETTLE - a))
 fi
 
 systemctl daemon-reload 2>/dev/null || :
@@ -181,13 +242,30 @@ back_in() {
 }
 
 say "cfm-edge is in the path (web DNAT $web_on, panel DNAT $panel_on): taking it out, restarting, putting it back"
-off_rc=0
-if [ "$web_on" = 1 ]; then cfm_retry edge off || off_rc=1; fi
-if [ "$panel_on" = 1 ]; then cfm_retry edge panel off || off_rc=1; fi
-st="$(cfm_run edge 2>&1)"
+# Off, then read back OFF for both. An off that succeeded but does not read
+# OFF (the daemon putting the DNAT back as it starts) is tried again; an off
+# that keeps failing was already retried by cfm_retry.
+reads_off() {
+    [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')" 'Web DNAT')" = 0 ] \
+        && [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Panel DNAT:')" 'Panel DNAT')" = 0 ]
+}
+take_out() {
+    off_rc=0
+    if [ "$web_on" = 1 ]; then cfm_retry edge off || off_rc=1; fi
+    if [ "$panel_on" = 1 ]; then cfm_retry edge panel off || off_rc=1; fi
+    st="$(cfm_run edge 2>&1)"
+}
+take_out
+if [ "$off_rc" = 0 ] && ! reads_off; then
+    for d in $RETRY_DELAYS; do
+        say "the off succeeded but the DNAT does not read OFF ($(printf '%s\n' "$st" | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')); again in ${d}s"
+        sleep "$d"
+        take_out
+        { [ "$off_rc" = 0 ] && ! reads_off; } || break
+    done
+fi
 # Restart only on a positive OFF for both: never while it may take traffic.
-if [ "$off_rc" != 0 ] || [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Web DNAT:')" 'Web DNAT')" != 0 ] \
-    || [ "$(state_of "$(printf '%s\n' "$st" | grep -m1 'Panel DNAT:')" 'Panel DNAT')" != 0 ]; then
+if [ "$off_rc" != 0 ] || ! reads_off; then
     back_in
     say "WARNING: the DNAT did not turn off ($(printf '%s\n' "$st" | grep -E 'Web DNAT|Panel DNAT' | sed 's/  */ /g' | tr '\n' ';')); NOT restarting, put back as it was. Restart cfm-edge out of the path yourself."
     exit 0
