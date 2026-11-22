@@ -48,10 +48,12 @@ and starts an edge.
     before they drop privileges, so the workers are covered today.
   - The unit limit means we no longer depend on that line if the config
     ever changes.
-- [ ] **`install-edge.sh` (cfm repo): the `pid` line becomes
-  `/run/cfm-edge.pid`**, the unit's `PIDFile=`. With `Type=forking`,
-  systemd otherwise waits for a pid file that never appears and kills the
-  edge after the timeout (HANDOFF.md, step 3).
+- [x] **CFM's cfm-edge config and the unit agree on the pid.** First by
+  mapping the `pid` line to `/run/cfm-edge.pid`; since cfm PR #1755
+  (2026-11-22) by setting no `pid` at all, so the package's compiled
+  `--pid-path` (= its `PIDFile=`) applies and cfm-edge can move it (§2,
+  "Narrow `/run`"). With `Type=forking`, a mismatch makes systemd wait for
+  a pid file that never appears and kill the edge.
 - [ ] **qualityweb: h2/h3 back on.** That node carries our local
   "http2/http3 off" change. With cfm-edge 1.31.9, `http2 on`, `http3 on`
   and `quic` go back into the template, which was the reason for building
