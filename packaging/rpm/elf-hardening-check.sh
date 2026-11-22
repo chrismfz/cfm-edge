@@ -7,14 +7,15 @@
 #    RELRO), and PIE for the cfm-edge binary. LuaJIT and lua-cjson build with their
 #    own Makefiles, so a bump that stops passing LDFLAGS fails the build here
 #    instead of shipping a library with lazy binding or an executable stack.
-# 2. REPORTS: how much of the static OpenSSL got the compile-time hardening.
-#    nginx's --with-openssl runs OpenSSL's own Configure, which does not read
-#    the distro optflags, so nothing proves that libcrypto / libssl carry the
-#    stack protector or FORTIFY. Per object it counts references to
-#    __stack_chk_fail (stack protector) and to any __*_chk (FORTIFY), next to
-#    nginx's own objects (built with optflags) for comparison. Report only:
-#    ROADMAP.md §3 decides what to do with it. An archive that cannot be found
-#    or read fails (a measurement that cannot run must fail).
+# 2. ENFORCES the static OpenSSL's compile hardening. nginx's --with-openssl
+#    runs OpenSSL's own Configure, which does not read the distro optflags,
+#    so the spec passes the flags through --with-openssl-opt. The check reads
+#    the CFLAGS/CPPFLAGS OpenSSL's Makefile got, and per object of
+#    libcrypto.a / libssl.a counts references to __stack_chk_fail (stack
+#    protector) and to any __*_chk (FORTIFY), printed next to nginx's own
+#    objects (built with optflags) for comparison. A missing flag, or none of
+#    the objects protected, fails. So does an archive that cannot be found or
+#    read (a measurement that cannot run must fail).
 #
 # Usage: elf-hardening-check.sh BUILDROOT BIN OPENSSL_SRC_DIR NGINX_OBJS_DIR
 #   Every ELF file under BUILDROOT is checked (so a new library or module is
@@ -83,10 +84,11 @@ report() { # LABEL FILE...
         bad "$label: nm read no objects"
         return
     fi
+    r_sp="$1"; r_fy="$3"
     echo "  $label: $2 objects with symbols; stack protector in $1 ($(( $1 * 100 / $2 ))%); FORTIFY (__*_chk) in $3 ($(( $3 * 100 / $2 ))%)"
 }
 
-echo "== OpenSSL compile hardening (report only)"
+echo "== OpenSSL compile hardening (enforced: the flags, and a nonzero share)"
 find_a() { # NAME: the archive nginx's build installed (.openssl/lib*), else the source tree's
     a="$(find "$ossl_dir" -path '*/.openssl/*' -name "$1" 2>/dev/null | head -1)"
     [ -n "$a" ] || a="$(find "$ossl_dir" -name "$1" 2>/dev/null | head -1)"
@@ -105,8 +107,24 @@ else
     else
         note "no $ossl_dir/Makefile: OpenSSL's compile flags not shown"
     fi
+    # Enforced since the spec passes the flags through --with-openssl-opt: the
+    # first measurement (2026-11-22, OpenSSL 3.5.9 on EL8) read CFLAGS
+    # "-Wall -O3 -fPIC" and 0% for both, against nginx's 69% / 6%. A bump of
+    # nginx or OpenSSL that stops passing them fails here.
+    for flag in -fstack-protector-strong -fstack-clash-protection -fcf-protection -D_FORTIFY_SOURCE=2; do
+        if [ -f "$ossl_dir/Makefile" ] && grep -E '^(CNF_)?(CFLAGS|CPPFLAGS)=' "$ossl_dir/Makefile" | grep -q -- "$flag"; then
+            ok "OpenSSL compiled with $flag"
+        else
+            bad "OpenSSL compiled without $flag (--with-openssl-opt in the spec)"
+        fi
+    done
+    r_sp=0; r_fy=0
     report libcrypto.a "$crypto"
+    [ "$r_sp" -gt 0 ] || bad "libcrypto.a: no object has the stack protector"
+    [ "$r_fy" -gt 0 ] || bad "libcrypto.a: no object uses FORTIFY"
+    r_sp=0
     report libssl.a "$ssl"
+    [ "$r_sp" -gt 0 ] || bad "libssl.a: no object has the stack protector"
     # nginx's own objects, built with optflags: what "hardened" looks like here.
     ngx_list="$(mktemp)"
     find "$ngx_objs" -name '*.o' >"$ngx_list" 2>/dev/null

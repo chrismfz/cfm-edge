@@ -77,7 +77,7 @@ RPM_DEFINES := \
 # A bare `make` shows the help (it used to fetch the sources: `make sources`).
 .DEFAULT_GOAL := help
 
-.PHONY: help sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean
+.PHONY: help sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean distclean release
 
 
 # `make help`: every target with its `## description`, as cfm's Makefile does.
@@ -86,7 +86,7 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z0-9 _-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | \
 	  awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-40s\033[0m %s\n", $$1, $$2}'
 	@echo
-	@echo "Release: make update && make package test-all && make sync"
+	@echo "Release: make update && make release && make sync"
 	@echo "         (then, as root on repo.nixpal.com: /root/repos-update.sh --rpm-only)"
 
 sources: ## Fetch + verify every pinned input into SOURCES/ (sha256, PGP, git pins)
@@ -127,6 +127,15 @@ test-all: ## Smoke + CFM config tests of that rpm on EL8, EL9 and EL10 (stamps .
 	@# Stamp exactly the bytes that passed: sync refuses anything else.
 	cd $(PKG_DIR) && sha256sum cfm-edge-[0-9]*.x86_64.rpm > .tested
 	@echo "tested: $$(cat $(PKG_DIR)/.tested)"
+
+# One command for the whole pre-publish run, in order: lint, the EL8 build
+# (its check section enforces the ELF/OpenSSL hardening), then smoke +
+# cfm-conf on EL8/9/10, which stamp the rpm for sync. Sub-makes, so the order
+# holds under -j; BUILD_STAMP is exported, so all three see one stamp.
+release: ## lint + package + test-all: the tested rpm make sync uploads
+	$(MAKE) lint
+	$(MAKE) package
+	$(MAKE) test-all
 
 # What a build host needs (a new test VM: run this first). Everything that
 # compiles (gcc, rpm-build, perl, pcre2/zlib headers) lives in the AlmaLinux
@@ -208,3 +217,6 @@ lint: ## bash -n + shellcheck + py_compile + the upgrade-restart test
 
 clean: ## Remove build/ and dist/
 	rm -rf build dist
+
+distclean: clean ## clean + the fetched SOURCES/ (the next build fetches and verifies again)
+	rm -rf SOURCES

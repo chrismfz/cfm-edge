@@ -172,19 +172,17 @@ already include:
   anything added later) needs a non-executable `GNU_STACK`, `GNU_RELRO` and
   `BIND_NOW`; the binary also PIE (reported, not enforced, for the luajit
   CLI). The first three must be present, or the build fails.
-- [ ] **OpenSSL is built by its own `Configure`** (static, through
-  `--with-openssl`), so it does not necessarily get the same flags: nginx's
-  `--with-cc-opt` and the final binary's symbols prove nothing about the C
-  code of libcrypto/libssl, which does every TLS handshake.
-  1. Measure: the same `%check` script reports it on every build: the
-     `CFLAGS`/`CPPFLAGS` OpenSSL's Makefile got, and per object of
-     `libcrypto.a`/`libssl.a` the share referencing `__stack_chk_fail` and
-     `__*_chk`, next to nginx's own objects (`annocheck` too, if installed).
-     First result: _pending (the next `make package`)_.
-  2. Only if they are missing, add `-fstack-protector-strong
-     -fstack-clash-protection -D_FORTIFY_SOURCE=2` (and `-fcf-protection`)
-     through `--with-openssl-opt`. Keep OpenSSL's assembly on.
-  3. Compare handshake CPU before and after (§6).
+- [x] **OpenSSL is built by its own `Configure`** (static, through
+  `--with-openssl`), so it did not get the distro flags. Measured by the
+  `%check` script on 2026-11-22 (OpenSSL 3.5.9, EL8): its Makefile read
+  `CFLAGS=-Wall -O3 -fPIC`, and 0 of 1000 `libcrypto.a` / 94 `libssl.a`
+  objects had the stack protector or FORTIFY (nginx's own objects: 69% / 6%).
+  The C code of every TLS handshake (parsers, ASN.1, X.509) ran unprotected.
+  Now passed through `--with-openssl-opt`: `-fstack-protector-strong
+  -fstack-clash-protection -fcf-protection -D_FORTIFY_SOURCE=2`, OpenSSL's
+  assembly kept on. `%check` enforces the flags and a nonzero share.
+  - [ ] Handshake CPU before/after on a canary (§7): the hot paths are
+    assembly, so the cost is expected to be small; measure it anyway.
 - [ ] `_FORTIFY_SOURCE=3` once EL8 leaves the fleet (the build moves to the
   next-oldest EL, CLAUDE.md).
 - [ ] An `-fzero-call-used-regs` / `-ftrivial-auto-var-init=zero` check:

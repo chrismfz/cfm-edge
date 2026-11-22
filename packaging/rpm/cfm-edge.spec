@@ -155,6 +155,13 @@ make -C lua-cjson-%{lua_cjson_version} %{?_smp_mflags} \
 # same behaviour as today, and nothing outside /usr/lib/cfm-edge decides it.
 # (CFM verifies no upstream certificate through OpenSSL's default CA paths.)
 #
+# OpenSSL's hardening: its Configure does not read the distro optflags, so
+# without these libcrypto/libssl (every TLS handshake) were built with
+# "-Wall -O3 -fPIC" only: no stack protector, no FORTIFY (measured by the
+# check section, 2026-11-22). The flags redhat-rpm-config gives the rest of
+# the build; the assembly stays on (it emits CET endbr64 under -fcf-protection).
+ossl_harden="-fstack-protector-strong -fstack-clash-protection -fcf-protection -D_FORTIFY_SOURCE=2"
+#
 # --- nginx. Only the modules CFM's edge uses; every module left out is attack
 # surface nobody audits for us (the list lives in README "What is built").
 cd nginx-%{nginx_version}
@@ -193,7 +200,7 @@ cd nginx-%{nginx_version}
     --without-http_empty_gif_module \
     --without-http_split_clients_module \
     --with-openssl="$top/openssl-%{openssl_version}" \
-    --with-openssl-opt="-fPIC no-weak-ssl-ciphers no-tests no-docs --openssldir=%{edge_libdir}/ssl" \
+    --with-openssl-opt="-fPIC $ossl_harden no-weak-ssl-ciphers no-tests no-docs --openssldir=%{edge_libdir}/ssl" \
     --add-module="$top/ngx_devel_kit-%{ndk_version}" \
     --add-module="$top/lua-nginx-module-%{lua_nginx_module_version}" \
     --with-cc-opt="%{optflags} -DNGX_LUA_ABORT_AT_PANIC" \
