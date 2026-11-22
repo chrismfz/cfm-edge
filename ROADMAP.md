@@ -166,16 +166,21 @@ already include:
     (`__stack_chk_fail`), FORTIFY in use (4 `__*_chk` symbols). Not yet
     checked: `-fcf-protection` / `-fstack-clash-protection` (need
     `annobin`/`annocheck`), LuaJIT and `cjson.so`.
-- [ ] **`%check` asserts the hardening of every ELF we load**, not only the
-  binary: `/usr/sbin/cfm-edge`, `libluajit-5.1.so.2` and `cjson.so` each
-  with a non-executable `GNU_STACK`, `GNU_RELRO` and `BIND_NOW`, plus PIE on
-  the executable. Cheap, and every later build then proves it.
+- [x] **`%check` asserts the hardening of every ELF we ship**
+  (`packaging/rpm/elf-hardening-check.sh`): every ELF under the buildroot
+  (`/usr/sbin/cfm-edge`, `libluajit-5.1.so.2`, `cjson.so`, the luajit CLI,
+  anything added later) needs a non-executable `GNU_STACK`, `GNU_RELRO` and
+  `BIND_NOW`; the binary also PIE (reported, not enforced, for the luajit
+  CLI). The first three must be present, or the build fails.
 - [ ] **OpenSSL is built by its own `Configure`** (static, through
   `--with-openssl`), so it does not necessarily get the same flags: nginx's
   `--with-cc-opt` and the final binary's symbols prove nothing about the C
   code of libcrypto/libssl, which does every TLS handshake.
-  1. Measure: the compiler lines of `crypto/` and `ssl/` in a `V=1` build
-     log, then `annocheck` on the binary.
+  1. Measure: the same `%check` script reports it on every build: the
+     `CFLAGS`/`CPPFLAGS` OpenSSL's Makefile got, and per object of
+     `libcrypto.a`/`libssl.a` the share referencing `__stack_chk_fail` and
+     `__*_chk`, next to nginx's own objects (`annocheck` too, if installed).
+     First result: _pending (the next `make package`)_.
   2. Only if they are missing, add `-fstack-protector-strong
      -fstack-clash-protection -D_FORTIFY_SOURCE=2` (and `-fcf-protection`)
      through `--with-openssl-opt`. Keep OpenSSL's assembly on.
