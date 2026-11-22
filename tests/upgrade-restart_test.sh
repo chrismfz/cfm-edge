@@ -39,6 +39,9 @@ mkdir -p "$W/bin"
 #   bypass      CFM prints a bypass note right after the state ("OFF; 1 bypass source(s)")
 #   optout      the opt-out file exists
 #   nocfm       CFM_BIN points at nothing
+#   onfails     a number: `cfm edge on` fails that many times first (the cfm
+#               daemon restarting in the same yum transaction holds nft)
+#   offfails    a number: `cfm edge off` fails that many times first
 cat >"$W/bin/systemctl" <<'EOF'
 #!/bin/sh
 S="$STUB_STATE"; echo "systemctl $*" >>"$S/calls"
@@ -81,10 +84,14 @@ case "$*" in
     esac
     case "$p" in ON) echo "  Panel DNAT:  ON   priority -101, mode auto$b" ;; OFF) echo "  Panel DNAT:  OFF$b" ;; *) echo "  Panel DNAT:  UNKNOWN"; rc=1 ;; esac
     exit "${rc:-0}" ;;
-  "edge off") [ -e "$S/offfail" ] && { echo UNKNOWN >"$S/web"; exit 1; }
+  "edge off") if [ -s "$S/offfails" ] && [ "$(cat "$S/offfails")" -gt 0 ]; then
+                echo $(( $(cat "$S/offfails") - 1 )) >"$S/offfails"; echo "Error: nft: timed out (slot busy)" >&2; exit 1; fi
+              [ -e "$S/offfail" ] && { echo UNKNOWN >"$S/web"; exit 1; }
               [ -e "$S/offrc" ] && { echo OFF >"$S/web"; exit 1; }
               [ -e "$S/offstuck" ] || echo OFF >"$S/web" ;;
-  "edge on"*) echo ON >"$S/web" ;;
+  "edge on"*) if [ -s "$S/onfails" ] && [ "$(cat "$S/onfails")" -gt 0 ]; then
+                echo $(( $(cat "$S/onfails") - 1 )) >"$S/onfails"; echo "Error: nft: timed out (slot busy)" >&2; exit 1; fi
+              echo ON >"$S/web" ;;
   "edge panel off") [ -e "$S/offstuck" ] || [ -e "$S/panelstuck" ] || echo OFF >"$S/panel" ;;
   "edge panel on") echo ON >"$S/panel" ;;
 esac
@@ -122,7 +129,10 @@ run() {
     *) echo "$engine (running)" >"$S/engine" ;;
   esac
   local cfmbin="$W/bin/cfm" k
-  for k in "$@"; do : >"$S/$k"; if [ "$k" = nocfm ]; then cfmbin="$W/does-not-exist/cfm"; fi; done
+  for k in "$@"; do
+    case "$k" in *=*) echo "${k#*=}" >"$S/${k%%=*}" ;; *) : >"$S/$k" ;; esac   # knob=N sets a count
+    if [ "$k" = nocfm ]; then cfmbin="$W/does-not-exist/cfm"; fi
+  done
   set +e
   OUT="$(env -i PATH="$W/bin:/usr/bin:/bin" STUB_STATE="$S" CFM_EDGE_BIN="$W/bin/cfm-edge" CFM_BIN="$cfmbin" \
          CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 sh "$SCRIPT" 2>&1)"
@@ -221,4 +231,21 @@ order "cfm edge off" "systemctl restart"; order "cfm edge panel off" "systemctl 
 lastorder "cfm edge on --priority -101 --http-port 9080 --https-port 9043" "systemctl restart"; lastorder "cfm edge panel on" "systemctl restart"
 state web ON; state panel ON
 
-echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off)"
+# earth, 2026-11-22: the same yum transaction restarted the cfm daemon, whose
+# firewall setup held nft, and the one `cfm edge on` failed: the web DNAT
+# stayed off 53 minutes. It is retried, and the CLI's error is logged.
+run "cfm edge on fails twice, then works" active ON ON cfm-edge onfails=2
+state web ON; state panel ON; says "retrying in"; says "timed out (slot busy)"
+if grep -qF "failed; run it by hand" <<<"$OUT"; then fail "$CURRENT: gave up although the third try worked"; fi
+[ "$(grep -c '^cfm edge on --priority' <<<"$CALLS")" = 3 ] || fail "$CURRENT: want 3 tries of cfm edge on, got $(grep -c '^cfm edge on --priority' <<<"$CALLS")"
+says "restarted;"
+
+run "cfm edge on never works" active ON ON cfm-edge onfails=99
+state web OFF; says "still failing after retries"; says "timed out (slot busy)"
+says "ERROR: cfm-edge restarted, but the DNAT is not back"; says "Run: cfm edge on --priority -101 --http-port 9080 --https-port 9043"
+if grep -qF "restarted; " <<<"$OUT"; then fail "$CURRENT: reported a plain restart with the web DNAT off"; fi
+
+run "cfm edge off fails once, then works" active ON ON cfm-edge offfails=1
+has "systemctl restart"; order "cfm edge off" "systemctl restart"; state web ON; state panel ON; says "retrying in"
+
+echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off, a failing cfm edge on/off retried and a DNAT not back reported as an ERROR)"

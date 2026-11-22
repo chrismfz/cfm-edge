@@ -45,6 +45,19 @@ Fixed / Hardened / Security / Removed**.
   - The transaction never fails because of it.
 
 ### Fixed
+- **The post-upgrade restart no longer leaves the web DNAT off when one
+  `cfm edge on` fails.** The same yum transaction often upgrades cfm too, and
+  its post-install restarts the cfm daemon, whose firewall setup on EL8 holds
+  nft for 30–55 s. `upgrade-restart.sh` tried `cfm edge on` once, threw its
+  error away, and left the DNAT off (earth, 2026-11-22: 53 minutes with the
+  origin serving directly, no WAF; orion's `panel off` failed the same way,
+  so it was left unrestarted, safely). Now every `cfm edge off/on` and
+  `panel off/on` is tried again after 10, 20, 30 and 60 s, each failure is
+  logged with the CLI's own message (yum output and `journalctl -t
+  cfm-edge-upgrade`), and the DNAT is read back after the restart: one that
+  was on and is not ends in an ERROR naming the command to run, not in
+  "restarted". The cost: up to 2 more minutes of the transaction while the
+  daemon starts (longer only if the CLI hangs to its 60 s timeout each try).
 - **The smoke test no longer touches a live edge's logs.** Its two forced log
   rotations ran `logrotate -f` on the packaged rule, which rotated every live
   `/var/log/cfm-edge/*.log` and sent USR1 to the master on a host with a
