@@ -27,9 +27,9 @@ every visitor's IP and full URL.
 |---|---|---|
 | Time to an nginx security fix | the vendor's: nginx 1.31.9 shipped 2026-11-18, OpenResty 1.31.9.1 reached the nodes 2026-11-23 | our own build from nginx.org; `check-deps` looks every 2 h and flags a `Security:` release |
 | Inputs | the vendor's | nginx sha256 + PGP, OpenSSL sha256, git tags pinned to commits (`versions.env`) |
-| `systemd-analyze security` | 9.2 UNSAFE (`openresty.service`, rigel), 9.6 UNSAFE (`imunify360-webshield`, titan) | 4.4 (EL8) / 4.5 (EL9+) OK |
+| `systemd-analyze security` | 9.2 UNSAFE (`openresty.service`, rigel), 9.6 UNSAFE (`imunify360-webshield`, titan) | 4.3 (EL8) / 4.2 (EL9+) OK |
 | Filesystem | writable wherever root can write | read-only but the 5 measured write paths; `/home` hidden; `/run` read-only, so a compromised root master cannot write a unit into `/run/systemd/system` |
-| Workers | the vendor's user | `cfm` (`/sbin/nologin`), `NoNewPrivileges`, 7 capabilities in the bounding set |
+| Workers | the vendor's user | `cfm` (`/sbin/nologin`), `NoNewPrivileges`, 6 capabilities in the bounding set (no `CAP_NET_BIND_SERVICE`: every listener is above 1024); `/proc` shows them only their own processes |
 | Logs | the vendor's modes (cfm-edge's own were 0644 until round 2: on virgo, 352 shell accounts could read them) | 0640 (`UMask=0027`, logrotate `create 0640`) |
 | Modules | the vendor's set | 12 modules and `stub_status`, threads, file AIO left out; without `mirror` and `ssi` the CVE-2026-123634 path does not exist |
 | OpenSSL | the vendor's build | built with the stack protector, FORTIFY and CET flags; `%check` fails a build whose ELFs lack PIE, RELRO, BIND_NOW or a non-exec stack |
