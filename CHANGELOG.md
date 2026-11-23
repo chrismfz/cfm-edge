@@ -103,7 +103,7 @@ Fixed / Hardened / Security / Removed**.
   config is above 1024 on all 8 nodes, so the capability was unused; a
   listen below 1024 would now fail the start, naming the port. With
   `ProtectProc`, a worker sees only `cfm`'s own processes in `/proc` (11 of
-  734 on rigel). `systemd-analyze security` 4.5 → 4.2 (EL9). Canary on rigel
+  734 on rigel). `systemd-analyze security` 4.5 → 4.2 (EL9), 4.4 → 4.3 (EL8, virgo). Canary on rigel
   (EL9): restart, every listener (IPv4/IPv6, TCP + QUIC), the write paths as
   `cfm`, a reload, live traffic, `cfm edge check` all ok. EL8's systemd 239
   ignores `ProtectProc`; the bounding set applies there too (sandboxed `-t`

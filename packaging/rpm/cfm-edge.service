@@ -112,8 +112,11 @@ ProtectControlGroups=yes
 ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectHostname=yes
-# The workers see only their own user's processes in /proc (hidepid); CFM's
-# edge Lua reads only /proc/self (sslcollector's RSS). Canary on rigel,
+# /proc shows each process only its own user's processes (hidepid): the
+# workers see no other user's, and the root master, with no CAP_SYS_PTRACE,
+# does not see the `cfm` workers either (it signals them by pid, which needs
+# no /proc). CFM's edge Lua reads only /proc/self (sslcollector's RSS). A
+# master-side read of a worker's /proc would find nothing. Canary on rigel,
 # 2026-11-23: a `cfm` shell in the worker's namespace saw 11 of 734 pids.
 # EL8's 239 does not know it either and ignores the line.
 ProtectProc=invisible
