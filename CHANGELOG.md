@@ -98,6 +98,16 @@ Fixed / Hardened / Security / Removed**.
   - **Now:** a `;` after ON/OFF is read like a space.
 
 ### Hardened
+- **The edge drops `CAP_NET_BIND_SERVICE` and hides other users' processes
+  from its workers (`ProtectProc=invisible`).** Every listener in CFM's
+  config is above 1024 on all 8 nodes, so the capability was unused; a
+  listen below 1024 would now fail the start, naming the port. With
+  `ProtectProc`, a worker sees only `cfm`'s own processes in `/proc` (11 of
+  734 on rigel). `systemd-analyze security` 4.5 → 4.2 (EL9). Canary on rigel
+  (EL9): restart, every listener (IPv4/IPv6, TCP + QUIC), the write paths as
+  `cfm`, a reload, live traffic, `cfm edge check` all ok. EL8's systemd 239
+  ignores `ProtectProc`; the bounding set applies there too (sandboxed `-t`
+  on virgo).
 - **`/run` is now read-only for the edge on EL9 and EL10 too**
   (`ReadOnlyPaths=/run`). Dropping `/run` from `ReadWritePaths=` made it
   read-only only on EL8. On EL9 and EL10, systemd leaves the `/run` tmpfs

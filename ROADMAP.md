@@ -175,11 +175,9 @@ are what we avoid.
 
   Reopen with a new fact: a master-side RCE class in nginx, or CFM no
   longer running `-t` as root.
-- [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024). Win: small.
-  Risk: loud (a bind fails at start). One canary pass, together with:
-- [ ] `ProtectProc=invisible` (EL9+; EL8's systemd ignores it). Win: small, a
-  worker no longer sees other users' processes. Risk: low; check first that
-  no edge Lua reads another process's `/proc`.
+- [x] Dropped `CAP_NET_BIND_SERVICE` and set `ProtectProc=invisible`
+  (canary on rigel, 2026-11-23; CHANGELOG). Every listener is above 1024 on
+  all 8 nodes, and the edge Lua reads only `/proc/self`.
 
 ## 3. Compile hardening
 

@@ -60,6 +60,9 @@ check "unit installed" test -f "$U"
 check "TimeoutStopSec=90 (graceful stop)" grep -qx 'TimeoutStopSec=90' "$U"
 check "LimitNOFILE=262144 (as openresty.service)" grep -qx 'LimitNOFILE=262144' "$U"
 check "KillSignal=SIGQUIT" grep -qx 'KillSignal=SIGQUIT' "$U"
+# Every listener is above 1024: the bounding set has no CAP_NET_BIND_SERVICE.
+check "no CAP_NET_BIND_SERVICE" bash -c "grep -q '^CapabilityBoundingSet=' '$U' && ! grep -q '^CapabilityBoundingSet=.*CAP_NET_BIND_SERVICE' '$U'"
+check "ProtectProc=invisible" grep -qx 'ProtectProc=invisible' "$U"
 # The pid is in the unit's RuntimeDirectory and equals the compiled default
 # (CFM's config sets none): a mismatch gets the edge killed at start.
 check "PIDFile=/run/cfm-edge/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge/cfm-edge.pid' "$U"
