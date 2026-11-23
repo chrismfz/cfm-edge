@@ -62,11 +62,20 @@ say() {
 cfm_run() {
     if command -v timeout >/dev/null 2>&1; then timeout 60 "$CFM" "$@"; else "$CFM" "$@"; fi
 }
-# why OUTPUT: the CLI's error lines, else its last two (an nft failure prints
-# the refused script after the error: its tail is `} } );`, virgo 2026-11-23).
+# why OUTPUT RC: the CLI's error lines, else its last two (an nft failure
+# prints the refused script after the error: its tail is `} } );`, virgo
+# 2026-11-23). Not CFM's structured log lines that carry an empty error
+# (`[firewall] ... status=ok error=""`): "error" matched them, and two of
+# them hid the real `dnat cpanel off failed: ...` line (virgo, 2026-11-23).
+# RC 124 is cfm_run's timeout, which leaves no error line of its own.
 why() {
-    w="$(printf '%s\n' "$1" | grep -iE 'error|fail|refus|timed out|denied|busy' | head -2 | tr '\n' ' ')"
-    [ -n "$w" ] || w="$(printf '%s\n' "$1" | tail -2 | tr '\n' ' ')"
+    if [ "${2:-}" = 124 ]; then
+        printf 'no answer within 60s, stopped by the timeout'
+        return
+    fi
+    e="$(printf '%s\n' "$1" | grep -v 'error=""')"
+    w="$(printf '%s\n' "$e" | grep -iE 'error|fail|refus|timed out|denied|busy' | head -2 | tr '\n' ' ')"
+    [ -n "$w" ] || w="$(printf '%s\n' "$e" | tail -2 | tr '\n' ' ')"
     printf '%s' "$w"
 }
 # cfm_retry ARGS...: `cfm ARGS`, tried again after each of RETRY_DELAYS while
@@ -74,12 +83,14 @@ why() {
 # to /dev/null, so a failed `cfm edge on` said nothing about why.
 cfm_retry() {
     out="$(cfm_run "$@" 2>&1)" && return 0
+    rc=$?
     for d in $RETRY_DELAYS; do
-        say "cfm $* failed ($(why "$out")); retrying in ${d}s (the cfm daemon may still be starting)"
+        say "cfm $* failed ($(why "$out" "$rc")); retrying in ${d}s (the cfm daemon may still be starting)"
         sleep "$d"
         out="$(cfm_run "$@" 2>&1)" && return 0
+        rc=$?
     done
-    say "WARNING: cfm $* still failing after retries: $(why "$out")"
+    say "WARNING: cfm $* still failing after retries: $(why "$out" "$rc")"
     return 1
 }
 
