@@ -54,12 +54,12 @@ and starts an edge.
   `--pid-path` (= its `PIDFile=`) applies and cfm-edge can move it (§2,
   "Narrow `/run`"). With `Type=forking`, a mismatch makes systemd wait for
   a pid file that never appears and kill the edge.
-- [ ] **qualityweb: h2/h3 back on.** That node carries our local
+- [x] **qualityweb: h2/h3 back on** (`http2 on`, `http3 on`, QUIC listening, 2026-11-23). That node carries our local
   "http2/http3 off" change. With cfm-edge 1.31.9, `http2 on`, `http3 on`
   and `quic` go back into the template, which was the reason for building
   cfm-edge in the first place.
-- [ ] **cfm repo, the packaging change that adopts cfm-edge** (cfm PR #1725
-  lists them):
+- [x] **cfm repo, the packaging change that adopts cfm-edge** (cfm PR #1725
+  lists them; in place on the fleet, 2026-11-23):
   - the sidecar deploy refreshes `/etc/cfm-edge/` too;
   - `cfm-edge-listen-v6.sh` writes `/etc/cfm-edge/cfm-listen-v6-*.conf`;
   - the panel Lua guard's `-t` probe prefers the active engine.
@@ -104,7 +104,7 @@ namespace; 0 "Read-only / Permission denied" in the error log.
 - `/var/lib/cfm/nginx` (`client_body_temp_path` / `proxy_temp_path` in
   CFM's config; first missed, see below);
 - `/var/lib/cfm/scanner` (ClamAV inline scan, `cfm_clamav.lua` pending file);
-- `/run` (pid + lock).
+- `/run` (pid + lock; since round 2 only `/run/cfm-edge`).
 
 Unix sockets (bridge, sslcollector, ingest, clamd) need no write path.
 
@@ -129,6 +129,21 @@ Unix sockets (bridge, sslcollector, ingest, clamd) need no write path.
    failed with EROFS before this check found it.
 6. Edge back on, then live traffic, a reload and the error log.
 
+### Round 2: done (rpm 1.31.9-20261123, on the fleet 2026-11-23)
+
+`/run` read-only to the master (`ReadOnlyPaths=/run`, only `/run/cfm-edge`
+writable) and `UMask=0027` (logs `0640`), read back on all 8 nodes. Two facts
+that would otherwise be relearnt:
+- On systemd 252 / 257 (EL9 / EL10), `ProtectSystem=strict` together with
+  `ProtectKernelTunables=` or `ProtectControlGroups=` leaves the `/run`
+  tmpfs rw; strict alone, and EL8's 239 with all three, make it ro. Hence
+  the explicit `ReadOnlyPaths=/run`.
+- `nginx -t` opens the pid file, and CFM runs `-t` while the edge is
+  stopped, so `/run/cfm-edge` must exist then: tmpfiles.d makes it and
+  `RuntimeDirectoryPreserve=yes` keeps it. nginx's `umask(0)` at daemonize
+  means `UMask` covers only what it opens first; logrotate's `create 0640`
+  keeps rotated logs 0640.
+
 ### Next
 
 Ranked 2026-11-22 by win against risk. "Loud" means a mistake fails `-t`,
@@ -136,92 +151,6 @@ the start or a test with the path or directive named; "silent" means it
 fails later, somewhere else, with nothing pointing back here. Silent risks
 are what we avoid.
 
-- [ ] **Narrow `/run`** (in the unit since this rpm; canary first, below).
-  Win: real. The master is root, and `/run/systemd/system`
-  is a unit load path, so a compromised master with `/run` writable could
-  write an unsandboxed unit there. Measured on virgo: the edge writes only
-  its pid under `/run`. `/run/cfm/*.sock` and `/var/run/sslcollector.sock`
-  are only connected to, which a read-only mount allows. **Listed as
-  `ReadOnlyPaths=/run`**: on EL9 and EL10 (systemd 252 / 257, rigel and
-  qualityweb, 2026-11-23) the `/run` tmpfs stays rw when
-  `ProtectSystem=strict` comes with `ProtectKernelTunables=` or
-  `ProtectControlGroups=` (bisected with transient units; strict alone makes
-  it ro). EL8's 239 makes it ro with all three, which is why the EL8 canary
-  did not see it. A canary on rigel with the line as a drop-in: `/run` and
-  `/run/systemd/system` EROFS, `/run/cfm-edge` writable, reload and the CFM
-  sockets fine, 200 on live https. Risk: loud (a pid
-  path the sandbox refuses fails the start), but it crosses repos: the
-  unit's `PIDFile=`, CFM's `pid` line and the logrotate `postrotate` must
-  agree. Done in order: CFM's conf sets no `pid` (cfm PR #1755), then this
-  rpm moves the compiled `--pid-path` and `PIDFile=` into
-  `RuntimeDirectory=cfm-edge` and drops `/run` from `ReadWritePaths=`.
-  `upgrade-restart.sh` refuses to restart while the live config still sets
-  its own `pid`. logrotate sends its USR1 through systemd
-  (`systemctl kill --kill-who=main`), so it reads no pid file at all: a
-  stale one (a master SIGKILLed at the end of TimeoutStopSec, the dir kept
-  by `RuntimeDirectoryPreserve`) could name another process by then.
-  **The pid dir must exist while the edge is stopped** (found by the canary,
-  virgo, 2026-11-23): `nginx -t` (and `-T`) opens the pid file
-  (create-or-open), and CFM runs `-t` outside the unit with the edge stopped
-  (`cfm-edge-listen-v6.service` before every start, boot included; the
-  install script; the panel self-test). A `RuntimeDirectory` alone is removed
-  at stop and made only at start, so those would fail with "No such file or
-  directory". The rpm ships a tmpfiles.d entry (`d /run/cfm-edge`, made at
-  boot, and by `%post` at install) and the unit keeps the dir at stop
-  (`RuntimeDirectoryPreserve=yes`). The same open is why the sandboxed `-t`
-  of `upgrade-restart.sh`, which has no `RuntimeDirectory` (a transient one
-  would remove the live dir at exit), gets `ReadWritePaths=/run/cfm-edge`:
-  without it every upgrade refused its restart ("Read-only file system").
-- [ ] **`UMask=0027`** (same rpm), and `%post` drops the world bits of the
-  existing logs once; logrotate `create 0640`. The log dir stays 0755: the
-  workers reopen the logs on USR1 as `cfm`, and the package cannot name a
-  `cfm` group (it does not create that user). 0640 files are enough.
-  Why: the logs were 0644 in a 0755 dir: on virgo, 352 accounts with a shell
-  could read every visitor's IP and full URL, query strings included (reset
-  tokens). CageFS hides `/var/log` from jailed users, but nothing in the
-  package relies on that.
-  **What `UMask` covers, measured on the canary:** only what nginx opens
-  before it daemonizes (the logs at start, the pid: 0640). nginx calls
-  `umask(0)` when it daemonizes (master and workers read `Umask: 0000`), so
-  a file it creates later takes nginx's own mode: a log reopened on USR1 or
-  HUP that does not exist yet is 0644. logrotate's `create 0640` makes every
-  rotated log before the USR1, which is what keeps them 0640. Files the Lua
-  writes (ClamAV `pending`) are under umask 0 as before; their dir is
-  root:cfm 0770.
-- **Canary for both, before the rpm** (CLAUDE.md: a drop-in first). Passed
-  on virgo (EL8, systemd 239), 2026-11-23: EL8 makes a `RuntimeDirectory`
-  writable under `ProtectSystem=strict` without listing it. The drop-in for
-  a node whose binary still has the old compiled pid path:
-  ```ini
-  # /etc/systemd/system/cfm-edge.service.d/zz-canary-pr13.conf
-  [Service]
-  PIDFile=/run/cfm-edge/cfm-edge.pid
-  RuntimeDirectory=cfm-edge
-  RuntimeDirectoryMode=0755
-  RuntimeDirectoryPreserve=yes
-  # nginx -t opens the pid file too: every -t needs the -g as well
-  ExecStartPre=
-  ExecStartPre=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
-  ExecStart=
-  ExecStart=/usr/sbin/cfm-edge -g "pid /run/cfm-edge/cfm-edge.pid;"
-  ExecReload=
-  ExecReload=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
-  ExecReload=/bin/kill -s HUP $MAINPID
-  ReadWritePaths=
-  ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
-  UMask=0027
-  ```
-  plus a logrotate that tried both pid paths (the rpm's now signals through
-  systemd instead). The
-  installed `upgrade-restart.sh` runs `-t` without the `-g`, so the canary's
-  restart ran it with `CFM_EDGE_BIN` pointing at a wrapper that adds
-  `-g "pid /tmp/cfm-edge-test.pid;"` (the sandbox has `PrivateTmp`). Then
-  the recipe above. Results: `/run` and `/run/systemd/system` read-only to
-  the root master, `/run/cfm-edge` writable, the pid there, reload OK, a
-  forced logrotate made 0640 files and the workers reopened them (USR1
-  through the new path), 200 on live https, out of the path 89 s.
-  Remove the drop-in, the logrotate backup and the wrapper once the rpm is
-  installed.
 - [decided] **The master stays root** (2026-11-23), with the sandbox above.
   Not: a non-root master (`User=cfm`, no capabilities), dropping
   `CAP_DAC_OVERRIDE` alone, or `InaccessiblePaths=` for `/var/lib/mysql`,
@@ -321,11 +250,29 @@ Done (spec `--without-*`):
 
 ## 5. Runtime
 
-- [ ] Workers run as `cfm`, with no shell and no home that means anything.
-- [ ] The config is root-owned and read-only to the workers. The generated
-  Lua token files keep `root:cfm 0640` (cfm CLAUDE.md §5).
-- [ ] Confirm `worker_rlimit_nofile` stays in CFM's config (it covers the
-  workers today, §1).
+- [x] Workers run as `cfm` (`/sbin/nologin`, home `/var/lib/cfm`); the config
+  is `root:root 0644` and the Lua token files `root:cfm 0640`; CFM's config
+  keeps `worker_rlimit_nofile 65535` (read on virgo, 2026-11-23).
+- [ ] **Later: a hot binary upgrade, so an update needs no time out of the
+  path.** Today `upgrade-restart.sh` takes the edge out of the path, then
+  restarts it. The graceful stop waits for every in-flight request, and
+  CFM's config has none of `worker_shutdown_timeout` and allows requests up
+  to an hour long (`proxy_read_timeout 1h` / `600s`: account transfers,
+  uploads). So the stop often runs to `TimeoutStopSec=90` and a SIGKILL.
+  Measured on the 2026-11-23 rollout: 27 to 129 s out of the path. The
+  origin serves meanwhile, without WAF or challenge; no request is refused.
+  The OpenResty and WebShield units restart the same way, but in the path.
+  - **The idea:** nginx's own USR2 / WINCH / QUIT. The new binary inherits
+    the listening sockets, the old workers drain in the background, and
+    the DNAT never moves.
+  - **Limits:**
+    - the new master is forked from the old one, so it keeps the old
+      unit's sandbox: only for an upgrade that changes no unit file, with a
+      real restart otherwise;
+    - systemd (`Type=forking`, `PIDFile=`) must follow the MainPID change;
+    - every path needs its own canary.
+  - **Not** `worker_shutdown_timeout`: it would also cut long requests (an
+    account transfer) on every reload, and CFM reloads the edge often.
 
 ## 6. Tests
 
@@ -359,6 +306,20 @@ before and after on the same traffic; nothing ships on reasoning alone.
   - Report CPU-seconds per 1,000 handshakes (and joules if measured).
   - This is the first measurement for "less CPU per handshake", and the
     baseline for §3's OpenSSL flags.
+  - **RSA-2048 → ECDSA P-256, rigel, 2026-11-23** (233 of 253 certs
+    converted by AutoSSL; recipe and raw numbers in `/root/p256bench/` on
+    rigel). Full handshakes on loopback, medians:
+    - edge CPU per handshake ~405 → ~290 µs (−28%); LiteSpeed (the 443
+      origin hop, a full handshake per request) ~560 → ~160 µs (−70%);
+    - 30 min of live traffic: edge + LiteSpeed CPU per request 3.37 →
+      3.09 ms (−8%), edge alone 1.20 → 1.29 ms (51 vs 73 req/s, not the
+      same mix);
+    - **the client pays ~+0.8 ms per full handshake** (A/B, same run: 0.80
+      → 1.56 ms, client CPU 0.55 → 1.46 ms): Let's Encrypt's ECDSA chain
+      (YE2 → Root YE → ISRG Root X2) is P-384-signed at every link, and a
+      P-384 verify costs ~0.27 ms. The edge pays it too as the origin hop's
+      client. Open: whether a shorter alternate chain exists and AutoSSL
+      can select it.
 - [ ] **Compression today**, read-only: Accept-Encoding, the upstream and the
   final Content-Encoding, MIME type and bytes.
   - It tells how many compressible bytes leave uncompressed to clients that
@@ -391,6 +352,31 @@ before and after on the same traffic; nothing ships on reasoning alone.
   REVALIDATED, origin bytes and origin CPU.
   - It changes Site Cache, so it goes through CFM's cache guards and parity
     tests (cfm CLAUDE.md §6), never as a lone conf edit.
+
+## 8. The .deb (last: no node runs CFM's edge on Debian yet)
+
+- [ ] **A .deb of the same EL8-built tree**, built with `dpkg-deb` the way
+  cfm's Makefile builds its own (HANDOFF.md step 6). The paths are already
+  distro-neutral (`/usr/lib/cfm-edge`), and the binary needs only glibc,
+  pcre2, zlib and libmaxminddb (`libmaxminddb0` on Debian). Tested on Debian
+  12 and Ubuntu 24.04 containers with the same smoke and cfm-conf tests.
+  - **No dpkg conffiles for anything CFM writes** (cfm PR #1770). CFM
+    rewrites `/etc/cfm-edge/nginx.conf` and its sidecars, so as conffiles
+    every upgrade that changed the placeholder would stop dpkg at the
+    "Configuration file … (Y/I/N/O/D/Z)" question: `apt upgrade -y` cannot
+    answer it, a broadcast multi-host session hangs on it, and
+    unattended-upgrades silently skips the package. Ship the defaults under
+    `/usr/share/cfm-edge/` and seed `/etc/cfm-edge` from postinst, like the
+    rpm's `%config(noreplace)`: a missing file gets the default, an
+    unchanged one (recorded sha256) the new default, an edited or symlinked
+    one stays, with the new default beside it as `.dpkg-dist`. One list of
+    those files for both packages, pinned by a gate as in cfm.
+  - **The upgrade restart:** postinst `configure` on an upgrade runs the same
+    `upgrade-restart.sh` (`tests/upgrade-restart_test.sh` covers it), never
+    `deb-systemd-invoke restart`; the unit stays not enabled.
+  - The logrotate file is not a conffile either (a changed `maxsize` would
+    prompt the same way); the tmpfiles.d entry and the `/run/cfm-edge` dir
+    come with it.
 
 ## Decided
 
