@@ -12,6 +12,42 @@ cfm-edge the wait is the time from nginx.org's release to our own build.
 What comes next (hardening, the fleet blockers): ROADMAP.md. The
 integration state and next steps: HANDOFF.md.
 
+## A hardened edge
+
+**Why.** The edge parses every request to every site on the server, before
+WAF or challenge. An RCE in it (nginx2root, CVE-2026-123007, was one; there
+will be others) hands the attacker that process. Two things then decide the
+damage: how soon the fix runs, and what the process may touch until it does.
+On a cPanel server `/home` is every customer's site, and the access logs hold
+every visitor's IP and full URL.
+
+**Against what the fleet ran before** (measured 2026-11-23):
+
+| | OpenResty / WebShield, as packaged | cfm-edge |
+|---|---|---|
+| Time to an nginx security fix | the vendor's: nginx 1.31.9 shipped 2026-11-18, OpenResty 1.31.9.1 reached the nodes 2026-11-23 | our own build from nginx.org; `check-deps` looks every 2 h and flags a `Security:` release |
+| Inputs | the vendor's | nginx sha256 + PGP, OpenSSL sha256, git tags pinned to commits (`versions.env`) |
+| `systemd-analyze security` | 9.2 UNSAFE (`openresty.service`, rigel), 9.6 UNSAFE (`imunify360-webshield`, titan) | 4.4 (EL8) / 4.5 (EL9+) OK |
+| Filesystem | writable wherever root can write | read-only but the 5 measured write paths; `/home` hidden; `/run` read-only, so a compromised root master cannot write a unit into `/run/systemd/system` |
+| Workers | the vendor's user | `cfm` (`/sbin/nologin`), `NoNewPrivileges`, 7 capabilities in the bounding set |
+| Logs | the vendor's modes (cfm-edge's own were 0644 until round 2: on virgo, 352 shell accounts could read them) | 0640 (`UMask=0027`, logrotate `create 0640`) |
+| Modules | the vendor's set | 12 modules and `stub_status`, threads, file AIO left out; without `mirror` and `ssi` the CVE-2026-123634 path does not exist |
+| OpenSSL | the vendor's build | built with the stack protector, FORTIFY and CET flags; `%check` fails a build whose ELFs lack PIE, RELRO, BIND_NOW or a non-exec stack |
+| An upgrade | restarts in the path | `%posttrans` takes a running edge out of CFM's DNAT, `-t`s the new binary, restarts, puts it back; a failed start leaves the origin serving |
+
+**What it does not cover** (ROADMAP.md §2, "Decided"):
+- The workers, as `cfm`, still read what `cfm` reads (CFM's state, the
+  `root:cfm 0640` Lua token files) and reach CFM's sockets.
+- The master stays root: a non-root master guards only against a master
+  compromise, which needs a worker RCE and then an escalation, and it
+  coupled the two repos at too many places (measured, 2026-11-23).
+- No `SystemCallFilter=` and no `MemoryDenyWriteExecute=` (LuaJIT's JIT
+  writes code at run time).
+
+Every sandbox line was measured live on a canary before it went into the
+unit (the recipe: ROADMAP.md §2); a missing write path does not stop the
+edge, it fails a large upload later.
+
 ## What is built
 
 | Component | Source | Pin |
@@ -62,10 +98,10 @@ install script does not add it either. cfm_clearance's HMAC runs on
 | `/usr/share/cfm-edge/site/lualib/` | operator-added Lua, searched first |
 | `/var/log/cfm-edge/` | logs (rotated by the package's own `/etc/logrotate.d/cfm-edge`) |
 | `/var/lib/cfm-edge/` | temp paths |
-| `cfm-edge.service` | systemd unit: **not** enabled, **no** `Conflicts=` with openresty/angie, and **not** restarted by an rpm upgrade |
+| `cfm-edge.service` | systemd unit: **not** enabled, **no** `Conflicts=` with openresty/angie; an rpm upgrade restarts it only when it is running, out of the path (`upgrade-restart.sh`) |
 
-Installing the rpm never touches the live edge. Switching a node over is
-the job of CFM's `install-edge.sh` (to be written, HANDOFF.md).
+Installing the rpm never takes the live edge's ports. Switching a node over
+is the job of CFM's `install-edge.sh`.
 
 ## Build
 
@@ -177,9 +213,11 @@ createrepo into `/el/`, and signs the repomd. Nodes see it there
 (`gpgcheck=1`).
 
 Then **canary** on one host (qualityweb) and keep `edge_health` clean for N
-hours before any other node upgrades. The rpm never restarts a running edge
-(`%systemd_postun`); a node takes a new build only when CFM's install script
-or the operator runs `-t` and restarts it. Today `/el/` is a single channel
+hours before any other node upgrades. The rpm never restarts blindly
+(`%systemd_postun`, not `_with_restart`): `%posttrans` runs
+`upgrade-restart.sh`, which restarts only a running edge, after the new
+binary passes `-t`, and out of CFM's DNAT (`cfm edge off` → restart → check
+→ `cfm edge on`). `/etc/cfm-edge/no-upgrade-restart` opts a node out. Today `/el/` is a single channel
 for every nixpal package. A separate `cfm-edge-testing` channel is an open
 decision (HANDOFF.md).
 
