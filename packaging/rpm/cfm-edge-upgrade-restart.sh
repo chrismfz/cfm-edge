@@ -207,6 +207,17 @@ config_test() {
         # the dir as a write path instead.
         if [ -d "$RUNDIR" ]; then set -- "$@" -p "ReadWritePaths=$RUNDIR"; fi
         if out="$(systemd-run --wait --quiet --pipe "$@" "$BIN" -t -q 2>&1)"; then
+            # Does the sandbox still keep /run read-only? systemd 252/257 left
+            # it rw under ProtectSystem=strict with ProtectKernelTunables= /
+            # ProtectControlGroups= until the unit listed ReadOnlyPaths=/run;
+            # a later systemd or directive could undo it without failing
+            # anything. A missing hardening, not a broken config: warn, and
+            # restart all the same.
+            probe="/run/.cfm-edge-ro-probe-$$"
+            if systemd-run --wait --quiet --pipe "$@" /bin/sh -c "touch '$probe'" >/dev/null 2>&1; then
+                rm -f "$probe"
+                say "WARNING: /run is writable inside cfm-edge's sandbox on this systemd (ReadOnlyPaths=/run does not hold): its master could write a unit into /run/systemd/system. Restarting anyway; report it."
+            fi
             return 0
         fi
         printf '%s\n' "$out" | tail -5 | sed 's/^/  /'

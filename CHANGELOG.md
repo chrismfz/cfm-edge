@@ -99,8 +99,11 @@ Fixed / Hardened / Security / Removed**.
   writable when `ProtectSystem=strict` comes with `ProtectKernelTunables=`
   or `ProtectControlGroups=`, as in this unit (measured on rigel after the
   upgrade, `/run/systemd/system` included, and on qualityweb).
-  `/run/cfm-edge` stays writable.
-- **`/run` is read-only for the edge; the pid moved to `/run/cfm-edge/`.**
+  `/run/cfm-edge` stays writable. `upgrade-restart.sh` now probes the
+  sandbox it tests the config in, and warns (still restarting) if `/run` is
+  writable there again.
+- **`/run` is read-only for the edge (EL8 from #13; EL9/EL10 only with the
+  `ReadOnlyPaths=/run` above); the pid moved to `/run/cfm-edge/`.**
   The master runs as root, and `/run/systemd/system` is a unit load path, so
   with `/run` writable a compromised master could write an unsandboxed unit
   there. The pid (the edge's only write under `/run`, measured on virgo) now

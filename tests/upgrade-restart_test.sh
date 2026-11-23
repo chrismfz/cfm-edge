@@ -26,6 +26,7 @@ mkdir -p "$W/bin"
 # (ON|OFF|UNKNOWN), engine (the Engine: text), and knobs (files):
 #   cfgbad      cfm-edge -t fails everywhere
 #   sandboxbad  -t fails only inside systemd-run (a sandbox the unit adds)
+#   runrw       the sandbox leaves /run writable (the read-only probe succeeds)
 #   nosdrun     systemd-run unusable (no bus): plain -t is used
 #   oldcfm      `cfm edge` is an unknown command
 #   offfail     `cfm edge off` fails and the DNAT reads UNKNOWN after it
@@ -84,6 +85,7 @@ case "$*" in
   *--deferred*) exit 0 ;;   # the handoff to a transient unit
   *ProtectClock*/bin/true) exit 1 ;;   # as EL8: refused transiently
   */bin/true) exit 0 ;;
+  *cfm-edge-ro-probe*) [ -e "$S/runrw" ] && exit 0; exit 1 ;;   # EROFS, as the unit's sandbox
   *" -t -q") [ -e "$S/sandboxbad" ] && { echo "nginx: [emerg] open() failed (30: Read-only file system)" >&2; exit 1; }
              [ -e "$S/cfgbad" ] && exit 1; exit 0 ;;
 esac
@@ -222,6 +224,15 @@ says "sets its own pid"; hasnt "refuses the live config"; hasnt "systemctl resta
 # virgo, 2026-11-23 (the canary): nginx -t opens the pid file, and the
 # transient -t has no RuntimeDirectory, so its dir comes as a write path; the
 # script makes the dir when the boot's tmpfiles.d has not yet.
+# rigel / qualityweb, 2026-11-23: /run stayed rw in the sandbox on EL9/EL10
+# until the unit listed ReadOnlyPaths=/run; the probe catches it coming back.
+run "/run writable in the sandbox: a warning, the restart still happens" active ON ON cfm-edge runrw
+says "WARNING: /run is writable inside cfm-edge's sandbox"; has "systemctl restart"; state web ON; state panel ON
+has "cfm-edge-ro-probe"
+
+run "/run read-only in the sandbox: no warning" active ON ON cfm-edge
+hasnt "/run is writable"; has "cfm-edge-ro-probe"; has "systemctl restart"
+
 run "the sandboxed -t gets the pid dir as a write path" active ON ON cfm-edge
 [ -d "$S/rundir" ] || fail "$CURRENT: the pid dir was not made"
 grep -- ' -t -q' <<<"$CALLS" | grep -qF -- "-p ReadWritePaths=$S/rundir" || fail "$CURRENT: the -t run lacks ReadWritePaths=<pid dir>"
