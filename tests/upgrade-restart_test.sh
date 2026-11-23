@@ -179,7 +179,7 @@ run() {
   if [ -e "$S/lockheld" ]; then flock "$S/lock" sleep 5 & sleep 0.3; fi
   set +e
   OUT="$(env -i PATH="$W/bin:/usr/bin:/bin" STUB_STATE="$S" CFM_EDGE_BIN="$W/bin/cfm-edge" CFM_BIN="$cfmbin" \
-         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 CFM_EDGE_LOCK="$S/lock" CFM_EDGE_DEFER_MAX="$defermax" sh "$SCRIPT" $arg 2>&1)"
+         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 CFM_EDGE_LOCK="$S/lock" CFM_EDGE_RUNDIR="$S/rundir" CFM_EDGE_DEFER_MAX="$defermax" sh "$SCRIPT" $arg 2>&1)"
   RC=$?
   set -e
   CALLS="$(cat "$S/calls")"
@@ -215,6 +215,17 @@ if grep -- ' -t -q' <<<"$CALLS" | grep -q 'ProtectClock'; then fail "$CURRENT: a
 run "live config sets its own pid" active ON ON cfm-edge pidline
 hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; state panel ON; says "sets its own pid"
 has "cfm-edge -T"
+
+run "a config pid is reported as such, before the config test" active ON ON cfm-edge pidline sandboxbad
+says "sets its own pid"; hasnt "refuses the live config"; hasnt "systemctl restart"; state web ON
+
+# virgo, 2026-11-23 (the canary): nginx -t opens the pid file, and the
+# transient -t has no RuntimeDirectory, so its dir comes as a write path; the
+# script makes the dir when the boot's tmpfiles.d has not yet.
+run "the sandboxed -t gets the pid dir as a write path" active ON ON cfm-edge
+[ -d "$S/rundir" ] || fail "$CURRENT: the pid dir was not made"
+grep -- ' -t -q' <<<"$CALLS" | grep -qF -- "-p ReadWritePaths=$S/rundir" || fail "$CURRENT: the -t run lacks ReadWritePaths=<pid dir>"
+has "systemctl restart"
 
 run "inline Lua 'pid =' is not a pid directive" active OFF OFF cfm-edge
 has "cfm-edge -T"; has "systemctl restart"

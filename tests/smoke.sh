@@ -65,6 +65,13 @@ check "KillSignal=SIGQUIT" grep -qx 'KillSignal=SIGQUIT' "$U"
 check "PIDFile=/run/cfm-edge/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge/cfm-edge.pid' "$U"
 check "RuntimeDirectory=cfm-edge" grep -qx 'RuntimeDirectory=cfm-edge' "$U"
 check "compiled --pid-path = PIDFile" bash -c "'$BIN' -V 2>&1 | grep -q -- '--pid-path=/run/cfm-edge/cfm-edge.pid '"
+# The pid dir exists while the edge is stopped: `cfm-edge -t` opens the pid
+# file, and CFM runs -t before the edge starts (cfm-edge-listen-v6.service,
+# the install script). tmpfiles.d makes it at boot, %post at install.
+check "RuntimeDirectoryPreserve=yes" grep -qx 'RuntimeDirectoryPreserve=yes' "$U"
+check "tmpfiles.d makes /run/cfm-edge" grep -qxE 'd /run/cfm-edge 0755 root root -' /usr/lib/tmpfiles.d/cfm-edge.conf
+check "/run/cfm-edge exists after install (edge never started)" test -d /run/cfm-edge
+check "cfm-edge -t passes with the edge stopped" "$BIN" -t -q
 check "no Conflicts= with the live edge" bash -c "! grep -q '^Conflicts=' '$U'"
 # Hardening (ROADMAP.md §2): the write paths the edge needs, or a large
 # upload/response fails with EROFS at run time while the edge looks healthy.

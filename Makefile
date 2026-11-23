@@ -97,7 +97,7 @@ sources: ## Fetch + verify every pinned input into SOURCES/ (sha256, PGP, git pi
 stage: sources ## Lay out an rpmbuild tree in build/ (used by rpm / srpm)
 	rm -rf $(TOPDIR) && mkdir -p $(TOPDIR)/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 	cp -p SOURCES/*.tar.gz $(TOPDIR)/SOURCES/
-	cp -p packaging/rpm/cfm-edge.service packaging/rpm/cfm-edge.logrotate packaging/rpm/nginx.conf packaging/rpm/cfm-edge-upgrade-restart.sh packaging/rpm/elf-hardening-check.sh $(TOPDIR)/SOURCES/
+	cp -p packaging/rpm/cfm-edge.service packaging/rpm/cfm-edge.logrotate packaging/rpm/nginx.conf packaging/rpm/cfm-edge-upgrade-restart.sh packaging/rpm/elf-hardening-check.sh packaging/rpm/cfm-edge.tmpfiles $(TOPDIR)/SOURCES/
 	for p in patches/*/*.patch; do cp -p "$$p" "$(TOPDIR)/SOURCES/$$(basename $$(dirname $$p))-$$(basename $$p)"; done
 	cp -p packaging/rpm/cfm-edge.spec $(TOPDIR)/SPECS/
 

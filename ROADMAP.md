@@ -149,42 +149,67 @@ are what we avoid.
   `RuntimeDirectory=cfm-edge` and drops `/run` from `ReadWritePaths=`.
   `upgrade-restart.sh` refuses to restart while the live config still sets
   its own `pid`; logrotate tries the new pid path, then the old.
+  **The pid dir must exist while the edge is stopped** (found by the canary,
+  virgo, 2026-11-23): `nginx -t` (and `-T`) opens the pid file
+  (create-or-open), and CFM runs `-t` outside the unit with the edge stopped
+  (`cfm-edge-listen-v6.service` before every start, boot included; the
+  install script; the panel self-test). A `RuntimeDirectory` alone is removed
+  at stop and made only at start, so those would fail with "No such file or
+  directory". The rpm ships a tmpfiles.d entry (`d /run/cfm-edge`, made at
+  boot, and by `%post` at install) and the unit keeps the dir at stop
+  (`RuntimeDirectoryPreserve=yes`). The same open is why the sandboxed `-t`
+  of `upgrade-restart.sh`, which has no `RuntimeDirectory` (a transient one
+  would remove the live dir at exit), gets `ReadWritePaths=/run/cfm-edge`:
+  without it every upgrade refused its restart ("Read-only file system").
 - [ ] **`UMask=0027`** (same rpm), and `%post` drops the world bits of the
   existing logs once; logrotate `create 0640`. The log dir stays 0755: the
   workers reopen the logs on USR1 as `cfm`, and the package cannot name a
   `cfm` group (it does not create that user). 0640 files are enough.
-  Why `UMask`: the logs were 0644 in a 0755 dir: on virgo, 352 accounts
-  with a shell could read every visitor's IP and full URL, query strings
-  included (reset tokens). CageFS hides `/var/log` from jailed users, but
-  nothing in the package relies on that. Risk: low and loud (a non-root
-  reader of the logs gets EACCES; CFM's daemon is root). The group bits stay:
-  clamd and CFM read `/var/lib/cfm/scanner/pending` (root:cfm 0770) as root
-  or through the group, so a reader that can reach those files today still
-  can.
-- **Canary for both, before the rpm** (CLAUDE.md: a drop-in first), on virgo
-  (EL8) and rigel (EL9), once the live config sets no `pid`:
+  Why: the logs were 0644 in a 0755 dir: on virgo, 352 accounts with a shell
+  could read every visitor's IP and full URL, query strings included (reset
+  tokens). CageFS hides `/var/log` from jailed users, but nothing in the
+  package relies on that.
+  **What `UMask` covers, measured on the canary:** only what nginx opens
+  before it daemonizes (the logs at start, the pid: 0640). nginx calls
+  `umask(0)` when it daemonizes (master and workers read `Umask: 0000`), so
+  a file it creates later takes nginx's own mode: a log reopened on USR1 or
+  HUP that does not exist yet is 0644. logrotate's `create 0640` makes every
+  rotated log before the USR1, which is what keeps them 0640. Files the Lua
+  writes (ClamAV `pending`) are under umask 0 as before; their dir is
+  root:cfm 0770.
+- **Canary for both, before the rpm** (CLAUDE.md: a drop-in first). Passed
+  on virgo (EL8, systemd 239), 2026-11-23: EL8 makes a `RuntimeDirectory`
+  writable under `ProtectSystem=strict` without listing it. The drop-in for
+  a node whose binary still has the old compiled pid path:
   ```ini
-  # /etc/systemd/system/cfm-edge.service.d/zz-run-umask.conf
+  # /etc/systemd/system/cfm-edge.service.d/zz-canary-pr13.conf
   [Service]
   PIDFile=/run/cfm-edge/cfm-edge.pid
   RuntimeDirectory=cfm-edge
   RuntimeDirectoryMode=0755
+  RuntimeDirectoryPreserve=yes
+  # nginx -t opens the pid file too: every -t needs the -g as well
   ExecStartPre=
   ExecStartPre=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
   ExecStart=
   ExecStart=/usr/sbin/cfm-edge -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ExecReload=
+  ExecReload=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ExecReload=/bin/kill -s HUP $MAINPID
   ReadWritePaths=
   ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
   UMask=0027
   ```
-  The installed logrotate still sends USR1 through `/run/cfm-edge.pid`: for
-  the canary, `ln -sfn /run/cfm-edge/cfm-edge.pid /run/cfm-edge.pid` on the
-  host (outside the sandbox `/run` is writable); remove it, and the
-  drop-in, once the rpm carries the change. Then the recipe above:
-  sandboxed `-t`, out of the path, restart, the pid
-  in `/run/cfm-edge/`, a write test into `/run` that fails, a reload, a
-  forced logrotate (`USR1` through the new path; the new log 0640), and
-  live traffic.
+  plus the new `/etc/logrotate.d/cfm-edge` (it tries both pid paths). The
+  installed `upgrade-restart.sh` runs `-t` without the `-g`, so the canary's
+  restart ran it with `CFM_EDGE_BIN` pointing at a wrapper that adds
+  `-g "pid /tmp/cfm-edge-test.pid;"` (the sandbox has `PrivateTmp`). Then
+  the recipe above. Results: `/run` and `/run/systemd/system` read-only to
+  the root master, `/run/cfm-edge` writable, the pid there, reload OK, a
+  forced logrotate made 0640 files and the workers reopened them (USR1
+  through the new path), 200 on live https, out of the path 89 s.
+  Remove the drop-in, the logrotate backup and the wrapper once the rpm is
+  installed.
 - [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024) and check
   `CAP_DAC_OVERRIDE`. Win: small (root without them still owns almost
   everything). Risk: loud (bind or open fails at `-t`/start). One canary
@@ -193,7 +218,7 @@ are what we avoid.
   worker no longer sees other users' processes. Risk: low; check first that
   no edge Lua reads another process's `/proc`.
 
-## 3. Compile hardening## 3. Compile hardening
+## 3. Compile hardening
 
 **Measure before adding.** The spec already passes `%{optflags}` and
 `%{build_ldflags}` (redhat-rpm-config) to nginx and LuaJIT. On EL8 these

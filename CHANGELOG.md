@@ -103,10 +103,16 @@ Fixed / Hardened / Security / Removed**.
   PR #1755**, whose cfm-edge config sets no `pid`: on a node whose live
   config still sets one, the post-upgrade restart is refused (the running edge
   keeps serving) and a later start would fail with "Read-only file system".
-- **The edge's files are no longer world-readable** (`UMask=0027`). The logs
-  were 0644: every local account with a shell could read every visitor's IP
-  and full URL, query strings included. The rpm drops the world bits of the
-  existing logs once, and logrotate creates 0640 files.
+  The dir exists while the edge is stopped too (a tmpfiles.d entry, and the
+  unit keeps it at stop): `cfm-edge -t` opens the pid file, and CFM runs `-t`
+  with the edge stopped (the IPv6 listen check before every start, the
+  install script). Canary on virgo (EL8) before the rpm.
+- **The edge's logs are no longer world-readable.** They were 0644: every
+  local account with a shell could read every visitor's IP and full URL,
+  query strings included. The rpm drops the world bits of the existing logs
+  once, logrotate creates 0640 files, and `UMask=0027` covers what the edge
+  opens at start. Only at start: nginx sets its umask to 0 when it
+  daemonizes, so the rotated logs are 0640 through logrotate.
 - **The static OpenSSL is now built with the stack protector, stack-clash
   protection, CET and FORTIFY.** Its own `Configure` ignores the distro
   flags, so until now libcrypto/libssl, the code every TLS handshake runs,

@@ -56,6 +56,7 @@ Source21:       cfm-edge.logrotate
 Source22:       nginx.conf
 Source23:       cfm-edge-upgrade-restart.sh
 Source24:       elf-hardening-check.sh
+Source25:       cfm-edge.tmpfiles
 
 # Our own patches, one change each (patches/<component>/ in the repo).
 Patch1:         nginx-0001-server-name-cfm-edge.patch
@@ -235,6 +236,7 @@ install -d -m 0755 %{buildroot}%{edge_logdir}
 install -d -m 0755 %{buildroot}%{edge_statedir}
 install -D -p -m 0644 %{SOURCE20} %{buildroot}%{_unitdir}/cfm-edge.service
 install -D -p -m 0644 %{SOURCE21} %{buildroot}%{_sysconfdir}/logrotate.d/cfm-edge
+install -D -p -m 0644 %{SOURCE25} %{buildroot}%{_tmpfilesdir}/cfm-edge.conf
 install -D -p -m 0755 %{SOURCE23} %{buildroot}%{edge_libdir}/upgrade-restart.sh
 
 %check
@@ -257,8 +259,12 @@ if readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "luajit-stage"; then echo 
 %post
 # Logs written before UMask=0027 (and their rotated copies) were 0644: drop
 # the world bits once, so a visitor's IP and full URL are not readable by
-# every local account. Files written after it are 0640 already.
+# every local account. Logs rotated after it are 0640 (logrotate create).
 chmod o-rwx %{edge_logdir}/* 2>/dev/null || :
+# The pid dir (/run/cfm-edge) exists from the next boot through tmpfiles.d;
+# create it now, before the restart in the posttrans section and before any
+# `cfm-edge -t` CFM runs.
+systemd-tmpfiles --create %{_tmpfilesdir}/cfm-edge.conf >/dev/null 2>&1 || :
 %systemd_post cfm-edge.service
 
 %preun
@@ -289,6 +295,7 @@ fi
 %config(noreplace) %{edge_confdir}/mime.types
 %config(noreplace) %{_sysconfdir}/logrotate.d/cfm-edge
 %{_unitdir}/cfm-edge.service
+%{_tmpfilesdir}/cfm-edge.conf
 %{edge_libdir}
 %{_datadir}/cfm-edge
 %dir %attr(0755,root,root) %{edge_logdir}
