@@ -45,6 +45,11 @@ Fixed / Hardened / Security / Removed**.
   - The transaction never fails because of it.
 
 ### Fixed
+- **A failed `cfm edge` call is logged with its real error.** The log kept
+  the first two lines matching "error", and CFM's structured log lines
+  (`[firewall] … status=ok error=""`) matched first: on virgo they hid the
+  actual `dnat cpanel off failed: …` line. Lines with an empty `error=""`
+  are skipped, and a call stopped by the 60 s timeout says so.
 - **The post-upgrade restart no longer collides with cfm's own restarts.**
   cfm's rpm restarts its daemon in its `%post` (before this script), and its
   old package's `%postun` asks again: on EL9/EL10 that second restart is

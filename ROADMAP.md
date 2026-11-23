@@ -222,10 +222,32 @@ are what we avoid.
   through the new path), 200 on live https, out of the path 89 s.
   Remove the drop-in, the logrotate backup and the wrapper once the rpm is
   installed.
-- [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024) and check
-  `CAP_DAC_OVERRIDE`. Win: small (root without them still owns almost
-  everything). Risk: loud (bind or open fails at `-t`/start). One canary
-  pass, together with:
+- [decided] **The master stays root** (2026-11-23), with the sandbox above.
+  Not: a non-root master (`User=cfm`, no capabilities), dropping
+  `CAP_DAC_OVERRIDE` alone, or `InaccessiblePaths=` for `/var/lib/mysql`,
+  `/home2`, backups and the like. Each would protect only against a
+  compromised MASTER, which needs a worker RCE and then an escalation: the
+  workers, which parse every request and run the Lua, already run as `cfm`.
+  Measured, 2026-11-23:
+  - A non-root master is feasible: every listener is above 1024, and
+    `cfm-edge -t` as `cfm` with no capabilities passes. But the canary on
+    virgo failed its start: the pid file left by a root `-t` (CFM runs `-t`
+    as root while the edge is stopped: the IPv6 listen check at every boot,
+    the install script) is root-owned, and systemd re-owns the
+    RuntimeDirectory, not the files in it. Making it work couples the two
+    repos at more places (the pid, the log ownership via `LogsDirectory=`,
+    the `cfm` user in this rpm, the modes of every file CFM writes into
+    `/etc/cfm-edge`), each failing as a start that does not happen.
+  - Without `CAP_DAC_OVERRIDE`, root cannot reopen the logs (`cfm:root
+    0640`): `upgrade-restart.sh`'s sandboxed `-t` refused it at once.
+  - For comparison: Imunify360's WebShield (also nginx, on titan) has no
+    sandbox at all (`ProtectSystem=no`, root master with
+    `dac_override`/`dac_read_search`, workers as its own user).
+
+  Reopen with a new fact: a master-side RCE class in nginx, or CFM no
+  longer running `-t` as root.
+- [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024). Win: small.
+  Risk: loud (a bind fails at start). One canary pass, together with:
 - [ ] `ProtectProc=invisible` (EL9+; EL8's systemd ignores it). Win: small, a
   worker no longer sees other users' processes. Risk: low; check first that
   no edge Lua reads another process's `/proc`.
