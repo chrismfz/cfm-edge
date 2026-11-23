@@ -141,7 +141,15 @@ are what we avoid.
   is a unit load path, so a compromised master with `/run` writable could
   write an unsandboxed unit there. Measured on virgo: the edge writes only
   its pid under `/run`. `/run/cfm/*.sock` and `/var/run/sslcollector.sock`
-  are only connected to, which a read-only mount allows. Risk: loud (a pid
+  are only connected to, which a read-only mount allows. **Listed as
+  `ReadOnlyPaths=/run`**: on EL9 and EL10 (systemd 252 / 257, rigel and
+  qualityweb, 2026-11-23) the `/run` tmpfs stays rw when
+  `ProtectSystem=strict` comes with `ProtectKernelTunables=` or
+  `ProtectControlGroups=` (bisected with transient units; strict alone makes
+  it ro). EL8's 239 makes it ro with all three, which is why the EL8 canary
+  did not see it. A canary on rigel with the line as a drop-in: `/run` and
+  `/run/systemd/system` EROFS, `/run/cfm-edge` writable, reload and the CFM
+  sockets fine, 200 on live https. Risk: loud (a pid
   path the sandbox refuses fails the start), but it crosses repos: the
   unit's `PIDFile=`, CFM's `pid` line and the logrotate `postrotate` must
   agree. Done in order: CFM's conf sets no `pid` (cfm PR #1755), then this

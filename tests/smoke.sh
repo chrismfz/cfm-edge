@@ -81,6 +81,10 @@ for p in /var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx
 done
 # /run stays read-only: /run/systemd/system is a unit load path.
 check "ReadWritePaths has no /run" bash -c "! grep '^ReadWritePaths=' '$U' | tr ' =' '\n\n' | grep -qxE '/run|/var/run'"
+# ...and it is read-only, explicitly: on EL9/EL10 systemd leaves the /run
+# tmpfs rw when ProtectSystem=strict comes with ProtectKernelTunables= or
+# ProtectControlGroups= (both in the unit); strict alone, or EL8, makes it ro.
+check "ReadOnlyPaths=/run" grep -qx 'ReadOnlyPaths=/run' "$U"
 check "UMask=0027 (logs not world-readable)" grep -qx 'UMask=0027' "$U"
 check "ProtectHome=yes" grep -qx 'ProtectHome=yes' "$U"
 check "NoNewPrivileges=yes" grep -qx 'NoNewPrivileges=yes' "$U"
