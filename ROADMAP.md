@@ -177,13 +177,11 @@ are what we avoid.
   longer running `-t` as root.
 - [x] Dropped `CAP_NET_BIND_SERVICE` and set `ProtectProc=invisible`
   (canary on rigel, 2026-11-23; CHANGELOG). Every listener is above 1024 on
-  all 8 nodes, and the edge Lua reads only `/proc/self`. Rollout: virgo
-  (EL8) first, since on EL8 only a sandboxed `-t` ran, and `-t` never binds.
-- [ ] **CFM: refuse an edge port below 1024.** `cfm dnat on --http-port /
-  --https-port` (and `HTTP_PORT` / `HTTPS_PORT`) accept any port, but the edge
-  has no `CAP_NET_BIND_SERVICE` now: a port below 1024 in its config fails the
-  start, and `upgrade-restart.sh` then leaves the edge out of the path. Reject
-  it there, or say so in the flags' help. Small, cfm repo.
+  all 8 nodes, and the edge Lua reads only `/proc/self`. On the fleet since
+  2026-11-23 (virgo, EL8, first). No guard against a future listen below
+  1024, on purpose: it fails loud (the start names the port,
+  `upgrade-restart.sh` leaves the origin serving, `edge_health` flags it),
+  and every listener is a DNAT target above 1024 by design.
 
 ## 3. Compile hardening
 
@@ -288,13 +286,6 @@ Done (spec `--without-*`):
   - **Now:** the two forced runs use a copy whose glob and pid file point into
     the scratch dir, and the test fails if the copy still names a live path.
     `logrotate -d` still parses the packaged file.
-- [ ] **Every `listen` in CFM's real config above 1024, checked in
-  `cfm-conf.sh`.** The smoke test pins the unit's bounding set as text, but
-  the edge in the tests starts outside the unit's sandbox, so a `listen 443`
-  added to CFM's config would pass CI and fail at the start on every node.
-  A grep over the rendered config is enough; starting it under
-  `systemd-run -p CapabilityBoundingSet=…` is the stronger form where the
-  container has systemd.
 - [ ] **A real HTTP/3 request in the test run, never skipped.** The smoke test
   checks the QUIC listener binds, but skips the `--http3-only` request when
   the container's curl has no HTTP/3, which EL's curl does not. That breaks
