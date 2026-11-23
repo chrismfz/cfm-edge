@@ -221,9 +221,6 @@ has "cfm-edge -T"
 run "a config pid is reported as such, before the config test" active ON ON cfm-edge pidline sandboxbad
 says "sets its own pid"; hasnt "refuses the live config"; hasnt "systemctl restart"; state web ON
 
-# virgo, 2026-11-23 (the canary): nginx -t opens the pid file, and the
-# transient -t has no RuntimeDirectory, so its dir comes as a write path; the
-# script makes the dir when the boot's tmpfiles.d has not yet.
 # rigel / qualityweb, 2026-11-23: /run stayed rw in the sandbox on EL9/EL10
 # until the unit listed ReadOnlyPaths=/run; the probe catches it coming back.
 run "/run writable in the sandbox: a warning, the restart still happens" active ON ON cfm-edge runrw
@@ -233,6 +230,9 @@ has "cfm-edge-ro-probe"
 run "/run read-only in the sandbox: no warning" active ON ON cfm-edge
 hasnt "/run is writable"; has "cfm-edge-ro-probe"; has "systemctl restart"
 
+# virgo, 2026-11-23 (the canary): nginx -t opens the pid file, and the
+# transient -t has no RuntimeDirectory, so its dir comes as a write path; the
+# script makes the dir when the boot's tmpfiles.d has not yet.
 run "the sandboxed -t gets the pid dir as a write path" active ON ON cfm-edge
 [ -d "$S/rundir" ] || fail "$CURRENT: the pid dir was not made"
 grep -- ' -t -q' <<<"$CALLS" | grep -qF -- "-p ReadWritePaths=$S/rundir" || fail "$CURRENT: the -t run lacks ReadWritePaths=<pid dir>"
