@@ -124,7 +124,7 @@ case "$*" in
                       printf '%s\n' '2026-11-23 04:07:27 [firewall] engine=nft phase=PanelDNATOff status=start duration=0s error="" op=dnat scope=cpanel' \
                         '2026-11-23 04:07:27 [firewall] engine=nft phase=PanelDNATOff status=ok duration=16ms error="" op=dnat scope=cpanel' \
                         'dnat cpanel off failed: reloading the listener service failed: exit status 1' >&2; exit 1; fi
-                    if [ -e "$S/paneloffhang" ] && [ ! -e "$S/hung" ]; then : >"$S/hung"; exit 124; fi
+                    if [ -e "$S/paneloffhang" ] && [ ! -e "$S/hung" ]; then : >"$S/hung"; echo "Error: nft: timed out (slot busy)" >&2; exit 124; fi
                     if [ -s "$S/panelbackn" ] && [ "$(cat "$S/panelbackn")" -gt 0 ]; then
                       echo $(( $(cat "$S/panelbackn") - 1 )) >"$S/panelbackn"; exit 0; fi
                     [ -e "$S/offstuck" ] || [ -e "$S/panelstuck" ] || echo OFF >"$S/panel" ;;
@@ -371,7 +371,7 @@ run "the CLI's error line, not CFM's structured log lines" active ON ON cfm-edge
 says "dnat cpanel off failed: reloading the listener service failed"; hasnt 'error=""'; has "systemctl restart"; state panel ON
 
 run "a CLI stopped by the timeout is logged as such" active ON ON cfm-edge paneloffhang
-says "no answer within 60s, stopped by the timeout"; has "systemctl restart"; state panel ON
+says "no answer within 60s, stopped by the timeout (before it: Error: nft: timed out (slot busy)"; has "systemctl restart"; state panel ON
 
 run "a CLI error is logged by its error line, not the script's tail" active ON ON cfm-edge onfails=1
 says "Error: nft: timed out (slot busy)"

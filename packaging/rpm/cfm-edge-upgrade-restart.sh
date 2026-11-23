@@ -69,12 +69,13 @@ cfm_run() {
 # them hid the real `dnat cpanel off failed: ...` line (virgo, 2026-11-23).
 # RC 124 is cfm_run's timeout, which leaves no error line of its own.
 why() {
-    if [ "${2:-}" = 124 ]; then
-        printf 'no answer within 60s, stopped by the timeout'
-        return
-    fi
     e="$(printf '%s\n' "$1" | grep -v 'error=""')"
     w="$(printf '%s\n' "$e" | grep -iE 'error|fail|refus|timed out|denied|busy' | head -2 | tr '\n' ' ')"
+    if [ "${2:-}" = 124 ]; then
+        # What it printed before the hang is the clue to why it hung.
+        printf 'no answer within 60s, stopped by the timeout%s' "${w:+ (before it: $w)}"
+        return
+    fi
     [ -n "$w" ] || w="$(printf '%s\n' "$e" | tail -2 | tr '\n' ' ')"
     printf '%s' "$w"
 }
