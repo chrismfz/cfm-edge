@@ -353,6 +353,31 @@ before and after on the same traffic; nothing ships on reasoning alone.
   - It changes Site Cache, so it goes through CFM's cache guards and parity
     tests (cfm CLAUDE.md §6), never as a lone conf edit.
 
+## 8. The .deb (last: no node runs CFM's edge on Debian yet)
+
+- [ ] **A .deb of the same EL8-built tree**, built with `dpkg-deb` the way
+  cfm's Makefile builds its own (HANDOFF.md step 6). The paths are already
+  distro-neutral (`/usr/lib/cfm-edge`), and the binary needs only glibc,
+  pcre2, zlib and libmaxminddb (`libmaxminddb0` on Debian). Tested on Debian
+  12 and Ubuntu 24.04 containers with the same smoke and cfm-conf tests.
+  - **No dpkg conffiles for anything CFM writes** (cfm PR #1770). CFM
+    rewrites `/etc/cfm-edge/nginx.conf` and its sidecars, so as conffiles
+    every upgrade that changed the placeholder would stop dpkg at the
+    "Configuration file … (Y/I/N/O/D/Z)" question: `apt upgrade -y` cannot
+    answer it, a broadcast multi-host session hangs on it, and
+    unattended-upgrades silently skips the package. Ship the defaults under
+    `/usr/share/cfm-edge/` and seed `/etc/cfm-edge` from postinst, like the
+    rpm's `%config(noreplace)`: a missing file gets the default, an
+    unchanged one (recorded sha256) the new default, an edited or symlinked
+    one stays, with the new default beside it as `.dpkg-dist`. One list of
+    those files for both packages, pinned by a gate as in cfm.
+  - **The upgrade restart:** postinst `configure` on an upgrade runs the same
+    `upgrade-restart.sh` (`tests/upgrade-restart_test.sh` covers it), never
+    `deb-systemd-invoke restart`; the unit stays not enabled.
+  - The logrotate file is not a conffile either (a changed `maxsize` would
+    prompt the same way); the tmpfiles.d entry and the `/run/cfm-edge` dir
+    come with it.
+
 ## Decided
 
 - [decided, 2026-11-22] **No seccomp syscall filter (`SystemCallFilter=`).**
