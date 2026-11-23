@@ -93,6 +93,13 @@ Fixed / Hardened / Security / Removed**.
   - **Now:** a `;` after ON/OFF is read like a space.
 
 ### Hardened
+- **`/run` is now read-only for the edge on EL9 and EL10 too**
+  (`ReadOnlyPaths=/run`). Dropping `/run` from `ReadWritePaths=` made it
+  read-only only on EL8. On EL9 and EL10, systemd leaves the `/run` tmpfs
+  writable when `ProtectSystem=strict` comes with `ProtectKernelTunables=`
+  or `ProtectControlGroups=`, as in this unit (measured on rigel after the
+  upgrade, `/run/systemd/system` included, and on qualityweb).
+  `/run/cfm-edge` stays writable.
 - **`/run` is read-only for the edge; the pid moved to `/run/cfm-edge/`.**
   The master runs as root, and `/run/systemd/system` is a unit load path, so
   with `/run` writable a compromised master could write an unsandboxed unit

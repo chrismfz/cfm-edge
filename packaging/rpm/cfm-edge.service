@@ -73,6 +73,13 @@ RestartSec=2
 # Unix sockets (CFM bridge, sslcollector, ingest, clamd) need no write path:
 # connecting to one on a read-only mount works.
 ProtectSystem=strict
+# /run is listed read-only because ProtectSystem=strict does not keep it so
+# here: on systemd 252 (EL9) and 257 (EL10), adding ProtectKernelTunables= or
+# ProtectControlGroups= (both below) leaves the /run tmpfs rw in the
+# namespace, /run/systemd/system included (measured 2026-11-23 on rigel and
+# qualityweb; strict alone, and EL8's 239 with all three, make it ro).
+# /run/cfm-edge (RuntimeDirectory, more specific) stays writable.
+ReadOnlyPaths=/run
 ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
 # The logs opened at start (every visitor's IP and full URL) and the pid are
 # not world-readable. Only those: nginx calls umask(0) when it daemonizes
