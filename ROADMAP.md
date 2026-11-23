@@ -326,6 +326,26 @@ Done (spec `--without-*`):
   Lua token files keep `root:cfm 0640` (cfm CLAUDE.md §5).
 - [ ] Confirm `worker_rlimit_nofile` stays in CFM's config (it covers the
   workers today, §1).
+- [ ] **Later: a hot binary upgrade, so an update needs no time out of the
+  path.** Today `upgrade-restart.sh` takes the edge out of the path, then
+  restarts it. The graceful stop waits for every in-flight request, and
+  CFM's config has none of `worker_shutdown_timeout` and allows requests up
+  to an hour long (`proxy_read_timeout 1h` / `600s`: account transfers,
+  uploads). So the stop often runs to `TimeoutStopSec=90` and a SIGKILL.
+  Measured on the 2026-11-23 rollout: 27 to 129 s out of the path. The
+  origin serves meanwhile, without WAF or challenge; no request is refused.
+  The OpenResty and WebShield units restart the same way, but in the path.
+  - **The idea:** nginx's own USR2 / WINCH / QUIT. The new binary inherits
+    the listening sockets, the old workers drain in the background, and
+    the DNAT never moves.
+  - **Limits:**
+    - the new master is forked from the old one, so it keeps the old
+      unit's sandbox: only for an upgrade that changes no unit file, with a
+      real restart otherwise;
+    - systemd (`Type=forking`, `PIDFile=`) must follow the MainPID change;
+    - every path needs its own canary.
+  - **Not** `worker_shutdown_timeout`: it would also cut long requests (an
+    account transfer) on every reload, and CFM reloads the edge often.
 
 ## 6. Tests
 
