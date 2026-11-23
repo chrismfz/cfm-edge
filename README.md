@@ -23,13 +23,14 @@ integration state and next steps: HANDOFF.md.
 
 All pins live in **`versions.env`**, and nothing else repeats a version.
 
-**nginx modules:** `http_ssl`, `http_v2`, `http_v3`, `realip`,
-`auth_request` and `stub_status` are added, plus the defaults (proxy,
-`limit_req`, geo/map, gzip, upstream keepalive, cache). Left out, because
-CFM's edge uses none of them: fastcgi, uwsgi, scgi, grpc, memcached, ssi,
-autoindex, userid, mirror, empty_gif, split_clients and auth_basic (also drops
-the libcrypt dependency). A module goes in when
-CFM needs it, not because it exists (CLAUDE.md).
+**nginx modules:** `http_ssl`, `http_v2`, `http_v3`, `realip` and
+`auth_request` are added, plus the defaults (proxy, `limit_req`, geo/map,
+gzip, upstream keepalive, cache). Left out, because CFM's edge uses none of
+them: fastcgi, uwsgi, scgi, grpc, memcached, ssi, autoindex, userid, mirror,
+empty_gif, split_clients, auth_basic (also drops the libcrypt dependency),
+`stub_status`, and thread pools / file AIO (`--with-threads`,
+`--with-file-aio`: CFM's config has no `aio` or `thread_pool`). A module
+goes in when CFM needs it, not because it exists (CLAUDE.md).
 
 **Not included:** lua-resty-openssl. lua-resty-http logs one WARN that mTLS
 to upstreams is unavailable; OpenResty nodes log the same, since their
@@ -89,8 +90,9 @@ and verifies sources and drives those containers:
 - A cfm checkout next to this repo (`../cfm`) or `CFM_DIR=`, for `test-all`.
 - Network to nginx.org, github.com (git over HTTPS + release downloads),
   quay.io and the AlmaLinux mirrors.
-- Optional: `ssh` + `rsync` and a key for repo.nixpal.com (`make sync`),
-  and `shellcheck` (`make lint`).
+- `shellcheck` (`make lint`, which `make release` runs first; EL: `dnf
+  install ShellCheck` from EPEL).
+- Optional: `ssh` + `rsync` and a key for repo.nixpal.com (`make sync`).
 - About 3 GB of disk for images and the build tree.
 
 On a new VM, `make doctor` checks all of this and names what is missing.

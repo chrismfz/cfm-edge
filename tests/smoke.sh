@@ -60,14 +60,28 @@ check "unit installed" test -f "$U"
 check "TimeoutStopSec=90 (graceful stop)" grep -qx 'TimeoutStopSec=90' "$U"
 check "LimitNOFILE=262144 (as openresty.service)" grep -qx 'LimitNOFILE=262144' "$U"
 check "KillSignal=SIGQUIT" grep -qx 'KillSignal=SIGQUIT' "$U"
-check "PIDFile=/run/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge.pid' "$U"
+# The pid is in the unit's RuntimeDirectory and equals the compiled default
+# (CFM's config sets none): a mismatch gets the edge killed at start.
+check "PIDFile=/run/cfm-edge/cfm-edge.pid" grep -qx 'PIDFile=/run/cfm-edge/cfm-edge.pid' "$U"
+check "RuntimeDirectory=cfm-edge" grep -qx 'RuntimeDirectory=cfm-edge' "$U"
+check "compiled --pid-path = PIDFile" bash -c "'$BIN' -V 2>&1 | grep -q -- '--pid-path=/run/cfm-edge/cfm-edge.pid '"
+# The pid dir exists while the edge is stopped: `cfm-edge -t` opens the pid
+# file, and CFM runs -t before the edge starts (cfm-edge-listen-v6.service,
+# the install script). tmpfiles.d makes it at boot, %post at install.
+check "RuntimeDirectoryPreserve=yes" grep -qx 'RuntimeDirectoryPreserve=yes' "$U"
+check "tmpfiles.d makes /run/cfm-edge" grep -qxE 'd /run/cfm-edge 0755 root root -' /usr/lib/tmpfiles.d/cfm-edge.conf
+check "/run/cfm-edge exists after install (edge never started)" test -d /run/cfm-edge
+check "cfm-edge -t passes with the edge stopped" "$BIN" -t -q
 check "no Conflicts= with the live edge" bash -c "! grep -q '^Conflicts=' '$U'"
 # Hardening (ROADMAP.md §2): the write paths the edge needs, or a large
 # upload/response fails with EROFS at run time while the edge looks healthy.
 check "ProtectSystem=strict" grep -qx 'ProtectSystem=strict' "$U"
-for p in /var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner /run; do
+for p in /var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner; do
     check "ReadWritePaths has $p" bash -c "grep '^ReadWritePaths=' '$U' | tr ' =' '\n\n' | grep -qx '$p'"
 done
+# /run stays read-only: /run/systemd/system is a unit load path.
+check "ReadWritePaths has no /run" bash -c "! grep '^ReadWritePaths=' '$U' | tr ' =' '\n\n' | grep -qxE '/run|/var/run'"
+check "UMask=0027 (logs not world-readable)" grep -qx 'UMask=0027' "$U"
 check "ProtectHome=yes" grep -qx 'ProtectHome=yes' "$U"
 check "NoNewPrivileges=yes" grep -qx 'NoNewPrivileges=yes' "$U"
 check "no MemoryDenyWriteExecute (LuaJIT JIT)" bash -c "! grep -q '^MemoryDenyWriteExecute' '$U'"
@@ -91,6 +105,10 @@ check "logrotate config installed" test -f "$L"
 # CFM's hourly pass runs this file so the cap fires between daily runs.
 check "maxsize 2G (size cap, as CFM's OpenResty logs)" grep -qE '^\s*maxsize\s+2G\s*$' "$L"
 check "rotate 7" grep -qE '^\s*rotate\s+7\s*$' "$L"
+check "create 0640 (as the unit's UMask)" grep -qE '^\s*create\s+0640\s*$' "$L"
+# USR1 through systemd, never a pid file (a stale one can name another process).
+check "postrotate signals the unit's main process" grep -qF 'systemctl kill --kill-who=main -s USR1 cfm-edge.service' "$L"
+check "postrotate reads no pid file" bash -c "! grep -qE '\.pid' '$L'"
 check "dateext with a to-the-second dateformat" grep -qE '^\s*dateformat\s+-%Y%m%d-%H%M%S\s*$' "$L"
 if command -v logrotate >/dev/null 2>&1; then
     check "logrotate -d parses it" logrotate -d "$L"
@@ -104,10 +122,10 @@ if command -v logrotate >/dev/null 2>&1; then
     lr_dir="$P/lr"; lr_conf="$P/logrotate-cfm-edge.conf"; lr_state="$P/logrotate.state"
     mkdir -p "$lr_dir"
     # (comments dropped: they name the live paths too)
-    sed -e '/^[[:space:]]*#/d' -e "s|/var/log/cfm-edge/\*\.log|$lr_dir/*.log|" -e "s|/run/cfm-edge\.pid|$lr_dir/none.pid|g" "$L" >"$lr_conf"
+    sed -e '/^[[:space:]]*#/d' -e "s|/var/log/cfm-edge/\*\.log|$lr_dir/*.log|" -e "s|cfm-edge\.service|cfm-edge-smoke-none.service|g" "$L" >"$lr_conf"
     check "the rotation copy points at the scratch dir, not the live logs" bash -c \
-        "grep -qF '$lr_dir/*.log' '$lr_conf' && grep -qF '$lr_dir/none.pid' '$lr_conf' && ! grep -qE '/var/log/cfm-edge|/run/cfm-edge\.pid' '$lr_conf'"
-    if grep -qE '/var/log/cfm-edge|/run/cfm-edge\.pid' "$lr_conf"; then
+        "grep -qF '$lr_dir/*.log' '$lr_conf' && grep -qF 'cfm-edge-smoke-none.service' '$lr_conf' && ! grep -qE '/var/log/cfm-edge|/run/cfm-edge|cfm-edge\.service' '$lr_conf'"
+    if grep -qE '/var/log/cfm-edge|/run/cfm-edge|cfm-edge\.service' "$lr_conf"; then
         bad "rotation copy still names a live path: not forcing a rotation"
     else
         echo one > "$lr_dir/smoke.log"

@@ -26,8 +26,20 @@
     notifempty
     compress
     delaycompress
+    # 0640 as the unit's UMask=0027 makes the edge's own files (owner and
+    # group as the old file: no user named here, cfm may not exist).
+    create 0640
     sharedscripts
+    # USR1 through systemd (the unit's main process, which systemd tracks),
+    # never through a pid file: a master killed at the end of TimeoutStopSec
+    # leaves its pid file behind (RuntimeDirectoryPreserve keeps the dir), and
+    # with the edge stopped the number could by then belong to another
+    # process, which USR1 terminates. It also reaches an edge started before
+    # an upgrade moved the pid path. --kill-who: systemd 239 (EL8) knows only
+    # that spelling; 252+ still accept it.
     postrotate
-        [ -s /run/cfm-edge.pid ] && kill -USR1 "$(cat /run/cfm-edge.pid)" 2>/dev/null || true
+        systemctl is-active --quiet cfm-edge.service \
+            && systemctl kill --kill-who=main -s USR1 cfm-edge.service >/dev/null 2>&1
+        true
     endscript
 }

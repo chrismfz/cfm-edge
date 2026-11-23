@@ -39,6 +39,7 @@ mkdir -p "$W/bin"
 #   bypass      CFM prints a bypass note right after the state ("OFF; 1 bypass source(s)")
 #   optout      the opt-out file exists
 #   nocfm       CFM_BIN points at nothing
+#   pidline     the live config (cfm-edge -T) sets its own pid
 #   onfails     a number: `cfm edge on` fails that many times first (the cfm
 #               daemon restarting in the same yum transaction holds nft)
 #   offfails    a number: `cfm edge off` fails that many times first
@@ -66,7 +67,7 @@ case "$1" in
           *"cfm.service -p Markers"*) [ -e "$S/cfmmarker" ] && echo needs-restart ;;
           *"cfm.service -p MainPID"*) if [ -e "$S/cfmage" ]; then echo 4242; else echo 0; fi ;;
         esac ;;
-  cat) printf '[Service]\nProtectSystem=strict\nReadWritePaths=/var/log/cfm-edge /run\nNoNewPrivileges=yes\nProtectClock=yes\n' ;;
+  cat) printf '[Service]\nProtectSystem=strict\nReadWritePaths=/var/log/cfm-edge /var/cache/nginx\nNoNewPrivileges=yes\nProtectClock=yes\n' ;;
   restart|start) if [ -e "$S/startfail" ]; then echo inactive >"$S/unit"; exit 1; fi
                  # The restart must never happen while cfm-edge is in the path.
                  if [ "$(cat "$S/enginename")" = cfm-edge ] && ! { grep -qx OFF "$S/web" && grep -qx OFF "$S/panel"; }; then
@@ -123,6 +124,12 @@ cat >"$W/bin/cfm-edge" <<'EOF'
 #!/bin/sh
 echo "cfm-edge $*" >>"$STUB_STATE/calls"
 [ -e "$STUB_STATE/cfgbad" ] && { echo "nginx: [emerg] unknown directive" >&2; exit 1; }
+if [ "$1" = -T ]; then
+  # Always an inline-Lua "pid =" line: it must never read as a pid directive.
+  printf '# configuration file /etc/cfm-edge/nginx.conf:\nworker_processes 6;\n'
+  [ -e "$STUB_STATE/pidline" ] && printf 'pid       /run/cfm-edge.pid;\n'
+  printf 'http {\n    init_worker_by_lua_block {\n        local t = { pid = ngx.worker.pid() }\n        pid = t.pid\n    }\n}\n'
+fi
 exit 0
 EOF
 cat >"$W/bin/ss" <<'EOF'
@@ -172,7 +179,7 @@ run() {
   if [ -e "$S/lockheld" ]; then flock "$S/lock" sleep 5 & sleep 0.3; fi
   set +e
   OUT="$(env -i PATH="$W/bin:/usr/bin:/bin" STUB_STATE="$S" CFM_EDGE_BIN="$W/bin/cfm-edge" CFM_BIN="$cfmbin" \
-         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 CFM_EDGE_LOCK="$S/lock" CFM_EDGE_DEFER_MAX="$defermax" sh "$SCRIPT" $arg 2>&1)"
+         CFM_EDGE_OPTOUT="$S/optout" CFM_EDGE_UPGRADE_WAIT=3 CFM_EDGE_LOCK="$S/lock" CFM_EDGE_RUNDIR="$S/rundir" CFM_EDGE_DEFER_MAX="$defermax" sh "$SCRIPT" $arg 2>&1)"
   RC=$?
   set -e
   CALLS="$(cat "$S/calls")"
@@ -202,8 +209,26 @@ hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "refuses the
 
 run "config refused only in the sandbox" active ON ON cfm-edge sandboxbad
 hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "Read-only file system"
-has "-p ProtectSystem=strict"; has "-p ReadWritePaths=/var/log/cfm-edge /run"   # the unit's own properties, spaces intact
+has "-p ProtectSystem=strict"; has "-p ReadWritePaths=/var/log/cfm-edge /var/cache/nginx"   # the unit's own properties, spaces intact
 if grep -- ' -t -q' <<<"$CALLS" | grep -q 'ProtectClock'; then fail "$CURRENT: a property systemd-run refuses transiently must be dropped from the -t run"; fi
+
+run "live config sets its own pid" active ON ON cfm-edge pidline
+hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; state panel ON; says "sets its own pid"
+has "cfm-edge -T"
+
+run "a config pid is reported as such, before the config test" active ON ON cfm-edge pidline sandboxbad
+says "sets its own pid"; hasnt "refuses the live config"; hasnt "systemctl restart"; state web ON
+
+# virgo, 2026-11-23 (the canary): nginx -t opens the pid file, and the
+# transient -t has no RuntimeDirectory, so its dir comes as a write path; the
+# script makes the dir when the boot's tmpfiles.d has not yet.
+run "the sandboxed -t gets the pid dir as a write path" active ON ON cfm-edge
+[ -d "$S/rundir" ] || fail "$CURRENT: the pid dir was not made"
+grep -- ' -t -q' <<<"$CALLS" | grep -qF -- "-p ReadWritePaths=$S/rundir" || fail "$CURRENT: the -t run lacks ReadWritePaths=<pid dir>"
+has "systemctl restart"
+
+run "inline Lua 'pid =' is not a pid directive" active OFF OFF cfm-edge
+has "cfm-edge -T"; has "systemctl restart"
 
 run "no systemd-run: plain -t" active OFF OFF cfm-edge nosdrun
 has "cfm-edge -t -q"; has "systemctl restart cfm-edge.service"
@@ -322,4 +347,4 @@ says "does not read OFF"; has "systemctl restart"; state web ON; state panel ON
 run "a CLI error is logged by its error line, not the script's tail" active ON ON cfm-edge onfails=1
 says "Error: nft: timed out (slot busy)"
 
-echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off, a failing cfm edge on/off retried and a DNAT not back reported as an ERROR, an off that does not read OFF retried, a cfm daemon just started waited for, its restart still to come handed to a transient unit, one run at a time, a signal after the off puts the DNAT back only to an edge that serves)"
+echo "OK: upgrade-restart: $n scenarios (restarts only on a DNAT read OFF, never starts a stopped edge, refused config / sandbox / a config pid / old cfm / unreadable state / opt-out keep the old edge, another engine's DNAT untouched, live priority restored, a restart that does not serve keeps the DNAT off, a failing cfm edge on/off retried and a DNAT not back reported as an ERROR, an off that does not read OFF retried, a cfm daemon just started waited for, its restart still to come handed to a transient unit, one run at a time, a signal after the off puts the DNAT back only to an edge that serves)"

@@ -62,9 +62,12 @@ step lands; delete a section once the code and README say the same thing.
      `configs/openresty.conf` with the path map `tests/cfm-conf.sh` already
      proves (`/usr/local/openresty/nginx/{conf,logs}` → `/etc/cfm-edge`,
      `/var/log/cfm-edge`), rather than adding a third template that would
-     drift. One addition to that map: the `pid` line must become
-     `/run/cfm-edge.pid`, the unit's `PIDFile=`. Otherwise systemd waits for a
-     pid file that never appears and kills the edge. Then: stop the old edge,
+     drift. One change to that map: the `pid` line goes (cfm PR #1755, 2026-11-22;
+     before it, it was mapped to `/run/cfm-edge.pid`). The package owns the
+     pid path: its compiled `--pid-path` is its unit's `PIDFile=`, so a
+     cfm-edge release can move it without a CFM one. A `pid` line that
+     disagreed would make systemd wait for a pid file that never appears and
+     kill the edge. Then: stop the old edge,
      `cfm-edge -t`, start, and roll back on failure. The same script does
      upgrades: the rpm deliberately does not restart the edge.
    - The daemon side: cfm-edge as a third engine in `edgeengine.Profiles`

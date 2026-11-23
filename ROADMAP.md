@@ -48,10 +48,12 @@ and starts an edge.
     before they drop privileges, so the workers are covered today.
   - The unit limit means we no longer depend on that line if the config
     ever changes.
-- [ ] **`install-edge.sh` (cfm repo): the `pid` line becomes
-  `/run/cfm-edge.pid`**, the unit's `PIDFile=`. With `Type=forking`,
-  systemd otherwise waits for a pid file that never appears and kills the
-  edge after the timeout (HANDOFF.md, step 3).
+- [x] **CFM's cfm-edge config and the unit agree on the pid.** First by
+  mapping the `pid` line to `/run/cfm-edge.pid`; since cfm PR #1755
+  (2026-11-22) by setting no `pid` at all, so the package's compiled
+  `--pid-path` (= its `PIDFile=`) applies and cfm-edge can move it (§2,
+  "Narrow `/run`"). With `Type=forking`, a mismatch makes systemd wait for
+  a pid file that never appears and kill the edge.
 - [ ] **qualityweb: h2/h3 back on.** That node carries our local
   "http2/http3 off" change. With cfm-edge 1.31.9, `http2 on`, `http3 on`
   and `quic` go back into the template, which was the reason for building
@@ -129,24 +131,96 @@ Unix sockets (bridge, sslcollector, ingest, clamd) need no write path.
 
 ### Next
 
-- [ ] **Narrow `/run`**: move the pid and lock to `/run/cfm-edge/`
-  (`RuntimeDirectory=cfm-edge`, `--pid-path`/`--lock-path` in the spec, CFM's
-  `pid` line and `PIDFile=`), then `ReadWritePaths=` names only that.
-- [ ] **Round 2**, each measured on its own as above:
-  - `SystemCallFilter=@system-service` + `SystemCallArchitectures=native`,
-    first with `SystemCallLog=` / `SystemCallErrorNumber=EPERM` on the
-    canary so a missing call shows in the log instead of killing a worker;
-  - `ProtectProc=invisible` (EL9+; check that no Lua reads `/proc` of
-    another process);
-  - `UMask=0027`.
-- [ ] Drop capabilities that turn out unneeded (`CAP_DAC_OVERRIDE` if every
-  file the master opens is root's; `CAP_NET_BIND_SERVICE` while every
-  listener is above 1024).
-- [ ] `MemoryDenyWriteExecute=yes` **only if LuaJIT's JIT is off**. The JIT
-  writes machine code at run time, which is exactly what this forbids.
-  Measure whether CFM's Lua needs the JIT before choosing one or the other.
-- [ ] Once the rpm carries round 1, remove the test drop-in
-  `zz-hardening.conf` from virgo and rigel (it duplicates the unit).
+Ranked 2026-11-22 by win against risk. "Loud" means a mistake fails `-t`,
+the start or a test with the path or directive named; "silent" means it
+fails later, somewhere else, with nothing pointing back here. Silent risks
+are what we avoid.
+
+- [ ] **Narrow `/run`** (in the unit since this rpm; canary first, below).
+  Win: real. The master is root, and `/run/systemd/system`
+  is a unit load path, so a compromised master with `/run` writable could
+  write an unsandboxed unit there. Measured on virgo: the edge writes only
+  its pid under `/run`. `/run/cfm/*.sock` and `/var/run/sslcollector.sock`
+  are only connected to, which a read-only mount allows. Risk: loud (a pid
+  path the sandbox refuses fails the start), but it crosses repos: the
+  unit's `PIDFile=`, CFM's `pid` line and the logrotate `postrotate` must
+  agree. Done in order: CFM's conf sets no `pid` (cfm PR #1755), then this
+  rpm moves the compiled `--pid-path` and `PIDFile=` into
+  `RuntimeDirectory=cfm-edge` and drops `/run` from `ReadWritePaths=`.
+  `upgrade-restart.sh` refuses to restart while the live config still sets
+  its own `pid`. logrotate sends its USR1 through systemd
+  (`systemctl kill --kill-who=main`), so it reads no pid file at all: a
+  stale one (a master SIGKILLed at the end of TimeoutStopSec, the dir kept
+  by `RuntimeDirectoryPreserve`) could name another process by then.
+  **The pid dir must exist while the edge is stopped** (found by the canary,
+  virgo, 2026-11-23): `nginx -t` (and `-T`) opens the pid file
+  (create-or-open), and CFM runs `-t` outside the unit with the edge stopped
+  (`cfm-edge-listen-v6.service` before every start, boot included; the
+  install script; the panel self-test). A `RuntimeDirectory` alone is removed
+  at stop and made only at start, so those would fail with "No such file or
+  directory". The rpm ships a tmpfiles.d entry (`d /run/cfm-edge`, made at
+  boot, and by `%post` at install) and the unit keeps the dir at stop
+  (`RuntimeDirectoryPreserve=yes`). The same open is why the sandboxed `-t`
+  of `upgrade-restart.sh`, which has no `RuntimeDirectory` (a transient one
+  would remove the live dir at exit), gets `ReadWritePaths=/run/cfm-edge`:
+  without it every upgrade refused its restart ("Read-only file system").
+- [ ] **`UMask=0027`** (same rpm), and `%post` drops the world bits of the
+  existing logs once; logrotate `create 0640`. The log dir stays 0755: the
+  workers reopen the logs on USR1 as `cfm`, and the package cannot name a
+  `cfm` group (it does not create that user). 0640 files are enough.
+  Why: the logs were 0644 in a 0755 dir: on virgo, 352 accounts with a shell
+  could read every visitor's IP and full URL, query strings included (reset
+  tokens). CageFS hides `/var/log` from jailed users, but nothing in the
+  package relies on that.
+  **What `UMask` covers, measured on the canary:** only what nginx opens
+  before it daemonizes (the logs at start, the pid: 0640). nginx calls
+  `umask(0)` when it daemonizes (master and workers read `Umask: 0000`), so
+  a file it creates later takes nginx's own mode: a log reopened on USR1 or
+  HUP that does not exist yet is 0644. logrotate's `create 0640` makes every
+  rotated log before the USR1, which is what keeps them 0640. Files the Lua
+  writes (ClamAV `pending`) are under umask 0 as before; their dir is
+  root:cfm 0770.
+- **Canary for both, before the rpm** (CLAUDE.md: a drop-in first). Passed
+  on virgo (EL8, systemd 239), 2026-11-23: EL8 makes a `RuntimeDirectory`
+  writable under `ProtectSystem=strict` without listing it. The drop-in for
+  a node whose binary still has the old compiled pid path:
+  ```ini
+  # /etc/systemd/system/cfm-edge.service.d/zz-canary-pr13.conf
+  [Service]
+  PIDFile=/run/cfm-edge/cfm-edge.pid
+  RuntimeDirectory=cfm-edge
+  RuntimeDirectoryMode=0755
+  RuntimeDirectoryPreserve=yes
+  # nginx -t opens the pid file too: every -t needs the -g as well
+  ExecStartPre=
+  ExecStartPre=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ExecStart=
+  ExecStart=/usr/sbin/cfm-edge -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ExecReload=
+  ExecReload=/usr/sbin/cfm-edge -t -q -g "pid /run/cfm-edge/cfm-edge.pid;"
+  ExecReload=/bin/kill -s HUP $MAINPID
+  ReadWritePaths=
+  ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
+  UMask=0027
+  ```
+  plus a logrotate that tried both pid paths (the rpm's now signals through
+  systemd instead). The
+  installed `upgrade-restart.sh` runs `-t` without the `-g`, so the canary's
+  restart ran it with `CFM_EDGE_BIN` pointing at a wrapper that adds
+  `-g "pid /tmp/cfm-edge-test.pid;"` (the sandbox has `PrivateTmp`). Then
+  the recipe above. Results: `/run` and `/run/systemd/system` read-only to
+  the root master, `/run/cfm-edge` writable, the pid there, reload OK, a
+  forced logrotate made 0640 files and the workers reopened them (USR1
+  through the new path), 200 on live https, out of the path 89 s.
+  Remove the drop-in, the logrotate backup and the wrapper once the rpm is
+  installed.
+- [ ] Drop `CAP_NET_BIND_SERVICE` (every listener is above 1024) and check
+  `CAP_DAC_OVERRIDE`. Win: small (root without them still owns almost
+  everything). Risk: loud (bind or open fails at `-t`/start). One canary
+  pass, together with:
+- [ ] `ProtectProc=invisible` (EL9+; EL8's systemd ignores it). Win: small, a
+  worker no longer sees other users' processes. Risk: low; check first that
+  no edge Lua reads another process's `/proc`.
 
 ## 3. Compile hardening
 
@@ -181,8 +255,13 @@ already include:
   Now passed through `--with-openssl-opt`: `-fstack-protector-strong
   -fstack-clash-protection -fcf-protection -D_FORTIFY_SOURCE=2`, OpenSSL's
   assembly kept on. `%check` enforces the flags and a nonzero share.
-  - [ ] Handshake CPU before/after on a canary (§7): the hot paths are
-    assembly, so the cost is expected to be small; measure it anyway.
+  - [x] Handshake CPU before/after on virgo (2026-11-22, live node, RSA-2048
+    cert, TLS 1.3 + X25519): worker CPU per new handshake, 3 rounds of 20 s
+    with 8 `openssl s_time -new` clients, an idle window of the same length
+    subtracted. Before 1.378 / 1.391 / 1.373 ms (mean 1.381), after 1.402 /
+    1.427 / 1.355 ms (mean 1.395): +1%, inside the after-rounds' own ±3%
+    spread. No measurable cost. Script: `/root/cfm-edge-hardening/hs-bench.sh`
+    on virgo.
 - [ ] `_FORTIFY_SOURCE=3` once EL8 leaves the fleet (the build moves to the
   next-oldest EL, CLAUDE.md).
 - [ ] An `-fzero-call-used-regs` / `-ftrivial-auto-var-init=zero` check:
@@ -201,9 +280,14 @@ Done (spec `--without-*`):
 - Removing `http_mirror_module` and `http_ssi_module` removes the
   CVE-2026-123634 path entirely.
 
-- [ ] Review what remains against "a module goes in when CFM needs it"
-  (CLAUDE.md): `threads`, `file-aio`, `stub_status`, `auth_request`,
-  `realip`, `compat`. Keep each only if CFM's config or Go uses it.
+- [x] Review what remains against "a module goes in when CFM needs it"
+  (CLAUDE.md). Read on virgo's live config, 2026-11-22: `auth_request` (2
+  uses) and `realip` are used; no `aio`, `thread_pool` or `stub_status`, so
+  `--with-threads`, `--with-file-aio` and `stub_status` are dropped (same
+  rpm as the `/run` change). `compat` stays while a dynamic module (Brotli, §7) is possible.
+  Win: small (less code). Risk: loud, since CFM's real config runs `-t` in
+  `make test-all` (cfm-conf). CFM's Go, Lua, confs and scripts use none of
+  the three either (grep, 2026-11-22).
 
 ## 5. Runtime
 
@@ -280,10 +364,30 @@ before and after on the same traffic; nothing ships on reasoning alone.
 
 ## Decided
 
+- [decided, 2026-11-22] **No seccomp syscall filter (`SystemCallFilter=`).**
+  - **Why:** the win is small on top of what the unit already has
+    (`NoNewPrivileges`, 7 capabilities, `ProtectKernel*`,
+    `RestrictNamespaces`, `RestrictAddressFamilies`: most dangerous calls,
+    such as mount, module loading, reboot or the clock, already fail for lack
+    of a capability). The failure mode is silent: a call outside the list
+    returns EPERM, which systemd does not audit, so a CFM change months later
+    (a new FFI call, a module, an nginx feature) breaks in one code path with
+    "Operation not permitted" and nothing points at the unit. Half the fleet
+    (EL8, systemd 239) cannot measure in log mode, so it would be enforced
+    blind there, and the list needs re-measuring at every glibc, kernel or
+    nginx change.
+  - **How it was tried:** a measurement-only drop-in
+    (`SystemCallLog=~@system-service`) on the four EL9/EL10 nodes; logging
+    confirmed working on rigel (audit `type=SECCOMP`, `code=0x7ffc0000`;
+    `ausearch` does not show these, `grep` the audit log). Removed the same
+    day, before it took effect. Reopen only with a concrete exploit class it
+    would stop that the capabilities do not.
+- [decided, 2026-11-22] **No `MemoryDenyWriteExecute=`.** It needs LuaJIT's JIT
+  (and PCRE's) off, a CPU cost on every request of the WAF/challenge logic,
+  to stop W+X memory, while the JIT itself needs exactly that. Reopen only
+  with a measurement that the JIT gains nothing on CFM's Lua.
 - Hardening is a canary-first change, never a fleet-wide flip: one unit
   directive too many takes every site on a node down at once.
-- The JIT and `MemoryDenyWriteExecute` are a pair: choose one after
-  measuring, never both by assumption.
 - [decided, 2026-11-21] No `buffer=`/`flush=` on the access logs.
   - The busiest node writes about 30 requests/s (2.7M a day), so the
     `write()` calls it would save are negligible.

@@ -1,0 +1,6 @@
+# The edge's pid dir must exist from boot, not only while cfm-edge runs:
+# `cfm-edge -t` opens the pid file (create-or-open), and CFM runs -t while the
+# edge is stopped (cfm-edge-listen-v6.service before every start, the install
+# script, the panel self-test). The unit keeps it at stop
+# (RuntimeDirectoryPreserve=yes).
+d /run/cfm-edge 0755 root root -

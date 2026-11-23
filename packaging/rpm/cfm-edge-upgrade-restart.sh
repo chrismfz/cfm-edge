@@ -16,6 +16,8 @@
 #   cfm-edge not running             -> nothing
 #   /etc/cfm-edge/no-upgrade-restart -> nothing (the operator restarts it)
 #   new binary refuses the config    -> nothing: the old edge keeps serving
+#   live config sets its own pid     -> nothing (the start would fail: the
+#                                       pid path is the package's)
 #     (tested inside the new unit's sandbox when systemd-run can, so a
 #     sandbox change that would fail the restart is caught here too)
 #   DNAT state not readable          -> nothing, warning (no blind restart)
@@ -49,6 +51,7 @@ RETRY_DELAYS="${CFM_EDGE_RETRY_DELAYS:-10 20 30 60}"
 SETTLE="${CFM_EDGE_CFM_SETTLE:-30}"
 DEFER_MAX="${CFM_EDGE_DEFER_MAX:-600}"   # longest wait for cfm's restart / start
 LOCK="${CFM_EDGE_LOCK:-/run/cfm-edge-upgrade.lock}"
+RUNDIR="${CFM_EDGE_RUNDIR:-/run/cfm-edge}"   # the compiled pid dir (tmpfiles.d)
 UNIT=cfm-edge.service
 
 say() {
@@ -167,6 +170,21 @@ settle
 
 systemctl daemon-reload 2>/dev/null || :
 
+# The pid path is the package's (its compiled default, in the unit's
+# RuntimeDirectory; /run itself is read-only in the sandbox). A live config
+# that still sets its own pid (a cfm without PR #1755, or a hand-written
+# one) fails the start with "Read-only file system". Checked before the
+# config test, which would fail on it with a less useful message. The regex
+# wants a value after "pid", never "=": inline Lua says `pid = ...`.
+# -T (like -t) opens the pid file, so its dir must exist. The rpm's %post
+# makes it (tmpfiles.d, as every boot does); this covers a run by hand, or a
+# %post whose systemd-tmpfiles failed (its errors are not fatal there).
+[ -d "$RUNDIR" ] || mkdir -m 0755 "$RUNDIR" 2>/dev/null || :
+if "$BIN" -T 2>/dev/null | grep -qE '^[[:space:]]*pid[[:space:]]+[^=[:space:]]'; then
+    say "WARNING: the live config sets its own pid; this cfm-edge owns that path (/run/cfm-edge/), and the start would fail. NOT restarting, the running edge keeps serving. Update cfm (its config sets no pid since PR #1755) or drop the pid line, then restart cfm-edge out of the path."
+    exit 0
+fi
+
 # The config test, inside the new unit's sandbox where systemd-run can apply
 # its properties (each one is tried alone first: EL8's systemd refuses some
 # transiently that its unit files accept).
@@ -183,6 +201,11 @@ config_test() {
             fi
         done <"$props"
         rm -f "$props"
+        # -t opens the pid file (create-or-open): in the unit, RuntimeDirectory
+        # makes its dir writable; this transient run has no RuntimeDirectory
+        # (one of its own would remove the live pid dir at exit), so it gets
+        # the dir as a write path instead.
+        if [ -d "$RUNDIR" ]; then set -- "$@" -p "ReadWritePaths=$RUNDIR"; fi
         if out="$(systemd-run --wait --quiet --pipe "$@" "$BIN" -t -q 2>&1)"; then
             return 0
         fi

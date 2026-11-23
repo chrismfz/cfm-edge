@@ -56,6 +56,7 @@ Source21:       cfm-edge.logrotate
 Source22:       nginx.conf
 Source23:       cfm-edge-upgrade-restart.sh
 Source24:       elf-hardening-check.sh
+Source25:       cfm-edge.tmpfiles
 
 # Our own patches, one change each (patches/<component>/ in the repo).
 Patch1:         nginx-0001-server-name-cfm-edge.patch
@@ -172,13 +173,11 @@ cd nginx-%{nginx_version}
     --conf-path=%{edge_confdir}/nginx.conf \
     --error-log-path=%{edge_logdir}/error.log \
     --http-log-path=%{edge_logdir}/access.log \
-    --pid-path=/run/cfm-edge.pid \
-    --lock-path=/run/lock/cfm-edge.lock \
+    --pid-path=/run/cfm-edge/cfm-edge.pid \
+    --lock-path=/run/cfm-edge/cfm-edge.lock \
     --http-client-body-temp-path=%{edge_statedir}/client_body \
     --http-proxy-temp-path=%{edge_statedir}/proxy \
     --build="cfm-edge-%{version}-%{release}" \
-    --with-threads \
-    --with-file-aio \
     --with-compat \
     --with-pcre-jit \
     --with-http_ssl_module \
@@ -186,7 +185,6 @@ cd nginx-%{nginx_version}
     --with-http_v3_module \
     --with-http_realip_module \
     --with-http_auth_request_module \
-    --with-http_stub_status_module \
     --without-http_auth_basic_module \
     --without-http_fastcgi_module \
     --without-http_uwsgi_module \
@@ -238,6 +236,7 @@ install -d -m 0755 %{buildroot}%{edge_logdir}
 install -d -m 0755 %{buildroot}%{edge_statedir}
 install -D -p -m 0644 %{SOURCE20} %{buildroot}%{_unitdir}/cfm-edge.service
 install -D -p -m 0644 %{SOURCE21} %{buildroot}%{_sysconfdir}/logrotate.d/cfm-edge
+install -D -p -m 0644 %{SOURCE25} %{buildroot}%{_tmpfilesdir}/cfm-edge.conf
 install -D -p -m 0755 %{SOURCE23} %{buildroot}%{edge_libdir}/upgrade-restart.sh
 
 %check
@@ -258,6 +257,14 @@ readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "%{luajit_prefix}/lib"
 if readelf -d "$bin" | grep -E 'R(UN)?PATH' | grep -q "luajit-stage"; then echo "staging RPATH leaked" >&2; exit 1; fi
 
 %post
+# Logs written before UMask=0027 (and their rotated copies) were 0644: drop
+# the world bits once, so a visitor's IP and full URL are not readable by
+# every local account. Logs rotated after it are 0640 (logrotate create).
+chmod o-rwx %{edge_logdir}/* 2>/dev/null || :
+# The pid dir (/run/cfm-edge) exists from the next boot through tmpfiles.d;
+# create it now, before the restart in the posttrans section and before any
+# `cfm-edge -t` CFM runs.
+%tmpfiles_create cfm-edge.conf
 %systemd_post cfm-edge.service
 
 %preun
@@ -288,6 +295,7 @@ fi
 %config(noreplace) %{edge_confdir}/mime.types
 %config(noreplace) %{_sysconfdir}/logrotate.d/cfm-edge
 %{_unitdir}/cfm-edge.service
+%{_tmpfilesdir}/cfm-edge.conf
 %{edge_libdir}
 %{_datadir}/cfm-edge
 %dir %attr(0755,root,root) %{edge_logdir}
