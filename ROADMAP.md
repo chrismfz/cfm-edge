@@ -148,7 +148,10 @@ are what we avoid.
   rpm moves the compiled `--pid-path` and `PIDFile=` into
   `RuntimeDirectory=cfm-edge` and drops `/run` from `ReadWritePaths=`.
   `upgrade-restart.sh` refuses to restart while the live config still sets
-  its own `pid`; logrotate tries the new pid path, then the old.
+  its own `pid`. logrotate sends its USR1 through systemd
+  (`systemctl kill --kill-who=main`), so it reads no pid file at all: a
+  stale one (a master SIGKILLed at the end of TimeoutStopSec, the dir kept
+  by `RuntimeDirectoryPreserve`) could name another process by then.
   **The pid dir must exist while the edge is stopped** (found by the canary,
   virgo, 2026-11-23): `nginx -t` (and `-T`) opens the pid file
   (create-or-open), and CFM runs `-t` outside the unit with the edge stopped
@@ -200,7 +203,8 @@ are what we avoid.
   ReadWritePaths=/var/log/cfm-edge /var/cache/nginx /var/lib/cfm-edge /var/lib/cfm/nginx /var/lib/cfm/scanner
   UMask=0027
   ```
-  plus the new `/etc/logrotate.d/cfm-edge` (it tries both pid paths). The
+  plus a logrotate that tried both pid paths (the rpm's now signals through
+  systemd instead). The
   installed `upgrade-restart.sh` runs `-t` without the `-g`, so the canary's
   restart ran it with `CFM_EDGE_BIN` pointing at a wrapper that adds
   `-g "pid /tmp/cfm-edge-test.pid;"` (the sandbox has `PrivateTmp`). Then

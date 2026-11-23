@@ -97,9 +97,8 @@ Fixed / Hardened / Security / Removed**.
   The master runs as root, and `/run/systemd/system` is a unit load path, so
   with `/run` writable a compromised master could write an unsandboxed unit
   there. The pid (the edge's only write under `/run`, measured on virgo) now
-  lives in the unit's `RuntimeDirectory=cfm-edge`: `--pid-path`,
-  `PIDFile=` and the logrotate USR1 all point there (logrotate also tries the
-  old path, for an edge not restarted since the upgrade). **Needs a cfm with
+  lives in the unit's `RuntimeDirectory=cfm-edge` (`--pid-path`,
+  `PIDFile=`). **Needs a cfm with
   PR #1755**, whose cfm-edge config sets no `pid`: on a node whose live
   config still sets one, the post-upgrade restart is refused (the running edge
   keeps serving) and a later start would fail with "Read-only file system".
@@ -107,6 +106,11 @@ Fixed / Hardened / Security / Removed**.
   unit keeps it at stop): `cfm-edge -t` opens the pid file, and CFM runs `-t`
   with the edge stopped (the IPv6 listen check before every start, the
   install script). Canary on virgo (EL8) before the rpm.
+- **logrotate signals the edge through systemd, not a pid file**
+  (`systemctl kill --kill-who=main -s USR1`, only while it is active). A
+  master killed at the end of a long drain left its pid file behind, and the
+  hourly pass would then send USR1, which terminates, to whatever process
+  had that number by then.
 - **The edge's logs are no longer world-readable.** They were 0644: every
   local account with a shell could read every visitor's IP and full URL,
   query strings included. The rpm drops the world bits of the existing logs

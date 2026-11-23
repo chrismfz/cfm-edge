@@ -264,7 +264,7 @@ chmod o-rwx %{edge_logdir}/* 2>/dev/null || :
 # The pid dir (/run/cfm-edge) exists from the next boot through tmpfiles.d;
 # create it now, before the restart in the posttrans section and before any
 # `cfm-edge -t` CFM runs.
-systemd-tmpfiles --create %{_tmpfilesdir}/cfm-edge.conf >/dev/null 2>&1 || :
+%tmpfiles_create cfm-edge.conf
 %systemd_post cfm-edge.service
 
 %preun

@@ -176,8 +176,9 @@ systemctl daemon-reload 2>/dev/null || :
 # one) fails the start with "Read-only file system". Checked before the
 # config test, which would fail on it with a less useful message. The regex
 # wants a value after "pid", never "=": inline Lua says `pid = ...`.
-# -T (like -t) opens the pid file, so its dir must exist: the rpm's
-# posttrans runs before tmpfiles.d's next boot.
+# -T (like -t) opens the pid file, so its dir must exist. The rpm's %post
+# makes it (tmpfiles.d, as every boot does); this covers a run by hand, or a
+# %post whose systemd-tmpfiles failed (its errors are not fatal there).
 [ -d "$RUNDIR" ] || mkdir -m 0755 "$RUNDIR" 2>/dev/null || :
 if "$BIN" -T 2>/dev/null | grep -qE '^[[:space:]]*pid[[:space:]]+[^=[:space:]]'; then
     say "WARNING: the live config sets its own pid; this cfm-edge owns that path (/run/cfm-edge/), and the start would fail. NOT restarting, the running edge keeps serving. Update cfm (its config sets no pid since PR #1755) or drop the pid line, then restart cfm-edge out of the path."

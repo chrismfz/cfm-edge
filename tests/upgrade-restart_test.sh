@@ -67,7 +67,7 @@ case "$1" in
           *"cfm.service -p Markers"*) [ -e "$S/cfmmarker" ] && echo needs-restart ;;
           *"cfm.service -p MainPID"*) if [ -e "$S/cfmage" ]; then echo 4242; else echo 0; fi ;;
         esac ;;
-  cat) printf '[Service]\nProtectSystem=strict\nReadWritePaths=/var/log/cfm-edge /run\nNoNewPrivileges=yes\nProtectClock=yes\n' ;;
+  cat) printf '[Service]\nProtectSystem=strict\nReadWritePaths=/var/log/cfm-edge /var/cache/nginx\nNoNewPrivileges=yes\nProtectClock=yes\n' ;;
   restart|start) if [ -e "$S/startfail" ]; then echo inactive >"$S/unit"; exit 1; fi
                  # The restart must never happen while cfm-edge is in the path.
                  if [ "$(cat "$S/enginename")" = cfm-edge ] && ! { grep -qx OFF "$S/web" && grep -qx OFF "$S/panel"; }; then
@@ -209,7 +209,7 @@ hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "refuses the
 
 run "config refused only in the sandbox" active ON ON cfm-edge sandboxbad
 hasnt "systemctl restart"; hasnt "cfm edge off"; state web ON; says "Read-only file system"
-has "-p ProtectSystem=strict"; has "-p ReadWritePaths=/var/log/cfm-edge /run"   # the unit's own properties, spaces intact
+has "-p ProtectSystem=strict"; has "-p ReadWritePaths=/var/log/cfm-edge /var/cache/nginx"   # the unit's own properties, spaces intact
 if grep -- ' -t -q' <<<"$CALLS" | grep -q 'ProtectClock'; then fail "$CURRENT: a property systemd-run refuses transiently must be dropped from the -t run"; fi
 
 run "live config sets its own pid" active ON ON cfm-edge pidline
