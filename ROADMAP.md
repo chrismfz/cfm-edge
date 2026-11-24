@@ -362,8 +362,24 @@ before and after on the same traffic; nothing ships on reasoning alone.
       → 1.56 ms, client CPU 0.55 → 1.46 ms): Let's Encrypt's ECDSA chain
       (YE2 → Root YE → ISRG Root X2) is P-384-signed at every link, and a
       P-384 verify costs ~0.27 ms. The edge pays it too as the origin hop's
-      client. Open: whether a shorter alternate chain exists and AutoSSL
-      can select it.
+      client.
+  - [decided, 2026-11-24] **Let's Encrypt's default chain stays.** What the
+    fleet serves (cPanel's `combined`, the same bytes the edge sends,
+    ~3.8 KB per full handshake): an EC-256 leaf → YE1/YE2 → Root YE
+    (cross-signed by X2) → ISRG Root X2 (cross-signed by X1), on rigel and
+    titan; RSA-2048 → YR1/YR2 → Root YR (cross-signed by X1) on orion and
+    virgo. LE's Chains of Trust page (updated 2026-11-11) offers two shorter
+    ECDSA chains:
+    - **ending at ISRG Root X2** (no X1 cross-sign): ~0.9 KB less and one
+      RSA verify less, but only Android 14+, iOS 16+, macOS 13+ and
+      Chrome 105+ trust X2 as a root, so Android 7-13 would fail;
+    - **ending at Root YE**: not in any major trust store yet ("not expected
+      to work", per LE).
+
+    Neither removes the cost that matters: every Gen-Y ECDSA link is
+    P-384, so the three P-384 verifies (the measured +0.8 ms on the client)
+    stay either way. Reopen when Root YE is in the major trust stores or LE
+    changes its default chain.
 - [x] **Compression today** (2026-11-24, orion and titan, read-only). The
   150 URLs with the most bytes of each node's day (pages, css/js/json/xml/
   svg, no query string, no admin/login/cart/ajax/cron paths), fetched once
