@@ -261,10 +261,12 @@ already include:
     1.427 / 1.355 ms (mean 1.395): +1%, inside the after-rounds' own ±3%
     spread. No measurable cost. Script: `/root/cfm-edge-hardening/hs-bench.sh`
     on virgo.
-- [ ] `_FORTIFY_SOURCE=3` once EL8 leaves the fleet (the build moves to the
-  next-oldest EL, CLAUDE.md).
-- [ ] An `-fzero-call-used-regs` / `-ftrivial-auto-var-init=zero` check:
-  cost against benefit, measured.
+- [decided, 2026-11-24] **`_FORTIFY_SOURCE=3`, `-fzero-call-used-regs` and
+  `-ftrivial-auto-var-init=zero` wait for EL8 to leave the fleet** (about two
+  years out). The release is built on EL8 (CLAUDE.md), whose gcc 8 has none
+  of them (they need GCC 11-12+); a gcc-toolset compiler only for the
+  release is not worth it. When the build moves to the next-oldest EL, measure
+  each one's cost against its benefit, in that change.
 - **LTO stays off** (LuaJIT, CLAUDE.md).
 - [decided] `-O3` / `-march=native` stay out of the release rpm: it keeps the
   EL8 CPU baseline and the distro flags. A host-specific build (an R630) is an
@@ -362,30 +364,33 @@ before and after on the same traffic; nothing ships on reasoning alone.
       P-384 verify costs ~0.27 ms. The edge pays it too as the origin hop's
       client. Open: whether a shorter alternate chain exists and AutoSSL
       can select it.
-- [ ] **Compression today**, read-only: Accept-Encoding, the upstream and the
-  final Content-Encoding, MIME type and bytes.
-  - It tells how many compressible bytes leave uncompressed to clients that
-    accept br.
-  - Where the origin (LiteSpeed) already sends br, the edge only passes it
-    through.
-  - It decides the Brotli item below.
-- [ ] **`pcre_jit on;`** in the main context: a cheap, reversible A/B.
-  - **What it covers:** the regexes of the nginx config only, about 6
-    `location ~` and 40 regex `map` / `if` in CFM's conf.
-  - **What it does not:** CFM's Lua makes no `ngx.re` call (measured
-    2026-11-21: its ~1,000 searches are Lua patterns, run by LuaJIT, not
-    PCRE), so the WAF/challenge logic is untouched.
-  - **Expectation:** small. Measure CPU per 1,000 requests on representative
-    traffic. PCRE's JIT needs W+X memory, like LuaJIT's (§2: no
-    `MemoryDenyWriteExecute` either way).
-- [ ] **Brotli (dynamic module, opt-in)**, only if the compression read shows
-  enough uncompressed bytes. It is a new module, so attack surface
-  ("a module goes in when CFM needs it", CLAUDE.md).
-  - First A/B on public assets: Brotli 4 against gzip 1, on bytes and worker
-    CPU for the same content.
-  - Test br, gzip and identity on cache HIT and MISS, and check
-    `Vary: Accept-Encoding`.
-  - Scope it to the assets locations (`brotli on` covers HTML too).
+- [x] **Compression today** (2026-11-24, orion and titan, read-only). The
+  150 URLs with the most bytes of each node's day (pages, css/js/json/xml/
+  svg, no query string, no admin/login/cart/ajax/cron paths), fetched once
+  through the edge with a browser's Accept-Encoding; the bytes weighted by the
+  access log:
+  - **The origin already compresses.** Everything that came from LiteSpeed
+    was br: 47% of orion's sample bytes, 87% of titan's; titan's other 7% was
+    gzip (html/xml), worth 0.7% of its sample as br.
+  - **The rest was a Site Cache bug, not missing compression:** 53% of
+    orion's sample bytes were Tier A HITs served uncompressed (a 485 KB css
+    the origin sends as 42 KB of br). LiteSpeed answers a request without
+    Accept-Encoding with the identity body and no `Vary`, and the cache kept
+    that copy for everyone. Fixed in cfm PR #1796 (the `$cfm_cache_no_ae`
+    rail; after the upgrade, reload the edge, then purge once).
+- [decided, 2026-11-24] **No Brotli module.** The origin already sends br and
+  the edge passes it through; what was left (gzip → br on titan) is under 1%
+  of the bytes. A module is attack surface ("a module goes in when CFM needs
+  it", CLAUDE.md). Reopen on an origin that does not compress, measured the
+  same way.
+- [decided, 2026-11-24] **No `pcre_jit`.** It speeds up only the regexes of
+  the nginx config (about 6 `location ~` and 40 regex `map` / `if`); CFM's Lua
+  makes no `ngx.re` call (its ~1,000 searches are Lua patterns, run by
+  LuaJIT). Measured on titan with `perf` on all 6 workers under live traffic:
+  `pcre2_match` was 0.15% (30 s) and 0.60% (60 s, 4,533 requests) of the
+  workers' CPU, so even an infinitely fast match gains under 1%, below what an
+  A/B on live traffic can tell from noise. Reopen if PCRE grows past 2-3% of
+  worker CPU (for example once CFM's Lua uses `ngx.re`).
 - [ ] **`quic_gso on;`**, only on a node with real HTTP/3 download traffic.
   Judge it by worker CPU per GiB and throughput on the same download. Read the
   H3 share with the TLS item first.
