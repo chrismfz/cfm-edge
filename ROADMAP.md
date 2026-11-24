@@ -392,6 +392,11 @@ before and after on the same traffic; nothing ships on reasoning alone.
     gzip, `Vary: Accept-Encoding`; a client without Accept-Encoding still
     gets identity. Origin bytes in the same 47 s window before and after:
     85.6 → 19.5 MB (−77%), same requests, same 5xx rate (0.09%).
+  - **virgo: `application/json` added** to its existing `mod_deflate` block
+    (`pre_virtualhost_global.conf`, with `application/manifest+json`; backup
+    in `/root/deflate-20261124/`): the JSON with the most bytes went 9,459 →
+    3,894 bytes (gzip, `Vary`). Its 508s around the change were a CloudLinux
+    LVE burst that started at 18:31, before it, and was gone at 18:40.
 - [decided, 2026-11-24] **The edge does not compress; compression belongs to
   the origin.** The edge passes through whatever the origin sends.
   - nginx's `gzip` runs after the cache, so every Site Cache HIT would be
