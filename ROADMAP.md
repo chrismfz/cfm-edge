@@ -212,14 +212,33 @@ already include:
   hand-written asm VM (no ENDBR), an upstream exception. `annocheck` 13.28
   hangs on `cfm-edge` (all kernel time; system binaries finish at once), so it
   is not the tool here.
-- [ ] **LuaJIT without the stack protector.** Its Makefile appends
-  `-fno-stack-protector` (and `-fomit-frame-pointer`) after the distro flags,
-  so it wins: none of its 70 C units has a canary. Win: its C parts (string
-  library, `string.format`, the parser, the GC) handle request data through
-  CFM's Lua. Cost: only C functions with local arrays; the hot path (the asm VM
-  and JIT'd code) is untouched. Before a patch (`patches/luajit2/`): find why
-  upstream turns it off (its Makefile / history, not memory), then `test-all`
-  (CFM's Lua in a real nginx), a CPU A/B on the same traffic, and a canary.
+- [decided, 2026-11-24] **LuaJIT stays without the stack protector.** Its
+  Makefile appends `-fno-stack-protector` (and `-fomit-frame-pointer`) after
+  the distro flags, so it wins: none of its 70 C units has a canary. The hot
+  path (the asm VM and JIT'd code) would be untouched either way; the canary
+  would cover its C parts (string library, `string.format`, the parser, the
+  GC), which handle request data through CFM's Lua.
+  - **Why upstream turns it off: no reason given.** `git log -S` on
+    LuaJIT's `src/Makefile`: added in 2.0.0-beta1 (2009, `55b16959`) without
+    a comment, "Always force" for OSX (2012, `67773165`), applied whenever
+    the compiler accepts it (2014, `92475419`, `6fddb9bc`). Nothing about
+    correctness.
+  - **Measured: a canary would not have stopped LuaJIT's one recent stack
+    CVE.** CVE-2024-25176 (LuaJIT #1149, fixed in `343ce0ed`, long before our
+    pin) is a 4-byte out-of-bounds READ of `nd[64]` in `lj_strfmt_wfnum`.
+    The parent commit, run with Mike Pall's testcase
+    `string.format("%7g",0x1.144399609d407p+401)`: the stock build and a
+    `-fstack-protector-all` build (canary present in `lj_strfmt_num.o`) both
+    print `5.5733e+120` and exit 0, the same as the fixed build; only ASan
+    reports `stack-buffer-overflow … READ of size 4`. A canary sees only a
+    write over it.
+  - **Cost of doing it anyway:** a `patches/luajit2/` patch carried through
+    every Lua-set bump, and a build that is no longer the combination
+    OpenResty CI-tests (the "Lua set moves as one" rule), plus `test-all`,
+    a CPU A/B and a canary. Lua code on the edge is CFM's own; a client
+    controls data, not code or format strings.
+  - **Reopen** on a LuaJIT stack overflow that WRITES and is reachable with
+    request data.
 - [x] **`%check` asserts the hardening of every ELF we ship**
   (`packaging/rpm/elf-hardening-check.sh`): every ELF under the buildroot
   (`/usr/sbin/cfm-edge`, `libluajit-5.1.so.2`, `cjson.so`, the luajit CLI,
