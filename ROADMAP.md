@@ -286,14 +286,16 @@ Done (spec `--without-*`):
   - **Now:** the two forced runs use a copy whose glob and pid file point into
     the scratch dir, and the test fails if the copy still names a live path.
     `logrotate -d` still parses the packaged file.
-- [ ] **A real HTTP/3 request in the test run, never skipped.** The smoke test
-  checks the QUIC listener binds, but skips the `--http3-only` request when
-  the container's curl has no HTTP/3, which EL's curl does not. That breaks
-  "a test that cannot run must fail". The private OpenSSL is what QUIC rides
-  on, so every OpenSSL bump needs this.
-  - Simplest: a QUIC handshake with ALPN `h3` through `openssl s_client
-    -quic` built from the same pinned OpenSSL.
-  - Or a pinned curl with HTTP/3 in one test container.
+- [x] **The QUIC path in every test run** (2026-11-24). No EL curl has
+  HTTP/3, so the smoke test's HTTP/3 request was always skipped and QUIC was
+  never exercised. `smoke.sh` now does a real QUIC handshake with `openssl
+  s_client -quic -alpn h3` on EL9 and EL10 (OpenSSL 3.5): ALPN h3, and the
+  cert picked by `ssl_certificate_by_lua` (sslcollector's path) or the default
+  one. Skipped on EL8 only (OpenSSL 1.1.1 has no QUIC client), so every
+  `test-all` runs it; a missing `-quic` on EL9/EL10 fails. It is the handshake,
+  not an HTTP/3 request: a full request still needs a curl with HTTP/3.
+  HTTP/3 is off by default in CFM's config (an open nginx bug,
+  nginx/nginx#1407), on per knob, so the binary must keep it working.
 
 ## 7. Performance (measure first)
 

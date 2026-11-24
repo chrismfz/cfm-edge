@@ -8,7 +8,9 @@
 # Covers the edge features CFM depends on (checked against cfm's configs/):
 #   - every non-CFM Lua module CFM requires: cjson(.safe), bit, ngx.ssl,
 #     ngx.balancer, resty.http, resty.maxminddb (+ resty.core/lrucache);
-#   - TLS + HTTP/2, and the QUIC/HTTP/3 listener parses and binds;
+#   - TLS + HTTP/2, and the QUIC/HTTP/3 listener parses and binds; a QUIC
+#     handshake with ALPN h3 and the cert by SNI (EL9/EL10; EL8 has no QUIC
+#     client);
 #   - ssl_certificate_by_lua (sslcollector's path: clear + set cert from PEM);
 #   - balancer_by_lua (cfm.lua's origin-keepalive upstreams);
 #   - the binary's linkage: private LuaJIT, no system libssl/libcrypto.
@@ -266,6 +268,22 @@ if curl --version | grep -q HTTP3; then
     check "HTTP/3 request" bash -c "curl -fsSk --http3-only https://127.0.0.1:9443/ | grep -q 'proto=HTTP/3.0'"
 else
     echo "  skip  HTTP/3 request (this curl has no HTTP/3)"
+fi
+# A real QUIC handshake on the QUIC listener, through the private OpenSSL:
+# ALPN h3 negotiated, and the cert picked by ssl_certificate_by_lua
+# (sslcollector's path) or the default one. No EL curl has HTTP/3, so before
+# this the QUIC path was never exercised. openssl s_client -quic exists from
+# OpenSSL 3.2: EL9 and EL10 carry 3.5, EL8 carries 1.1.1. Skipped on EL8 only,
+# a written-down environment limit (CLAUDE.md); on EL9/EL10 a missing -quic
+# fails the check. test-all runs all three, so every build gets it.
+el=$(. /etc/os-release && echo "${VERSION_ID%%.*}")
+if [ "$el" = 8 ]; then
+    echo "  skip  QUIC handshake (EL8's OpenSSL 1.1.1 has no QUIC client; EL9 and EL10 run it)"
+else
+    for pair in lua.test:lua.test other.test:default.test; do
+        check "QUIC handshake, ALPN h3, SNI ${pair%%:*} -> CN=${pair##*:}" bash -c \
+            "out=\$(timeout 10 openssl s_client -quic -alpn h3 -connect 127.0.0.1:9443 -servername ${pair%%:*} </dev/null 2>&1); grep -q '^ALPN protocol: h3' <<<\"\$out\" && grep -qE '^subject=.*CN ?= ?${pair##*:}\$' <<<\"\$out\""
+    done
 fi
 check "no [alert]/[emerg]/lua errors in error.log" bash -c \
     "! grep -E '\[(alert|emerg|crit)\]|lua entry thread aborted|runtime error' '$P/logs/error.log'"

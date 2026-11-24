@@ -81,7 +81,9 @@ a canary**.
   checkout is missing. Its only skips are written-down environment limits:
   the resty.openssl mTLS WARN (also present on OpenResty nodes), and the
   `setrlimit` alert only when the hard nofile really is below what CFM asks
-  for.
+  for. `smoke.sh` skips the QUIC handshake on EL8 only (its OpenSSL 1.1.1 has
+  no QUIC client; EL9 and EL10 run it, so every `test-all` does), and the
+  curl HTTP/3 request where curl lacks HTTP/3 (every EL curl today).
 
 ## Before you push
 
