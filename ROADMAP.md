@@ -423,11 +423,33 @@ before and after on the same traffic; nothing ships on reasoning alone.
 - [ ] **`quic_gso on;`**, only on a node with real HTTP/3 download traffic.
   Judge it by worker CPU per GiB and throughput on the same download. Read the
   H3 share with the TLS item first.
-- [ ] **`proxy_cache_revalidate on;`** for Site Cache's static tier, only if
-  EXPIRED/STALE are frequent there. A 304 avoids re-sending the body; measure
-  REVALIDATED, origin bytes and origin CPU.
-  - It changes Site Cache, so it goes through CFM's cache guards and parity
-    tests (cfm CLAUDE.md §6), never as a lone conf edit.
+- [decided, 2026-11-24] **No `proxy_cache_revalidate` on Site Cache's static
+  tier.** Measured from the day's access logs, static tier only
+  (`up=cfm_apache_static`): with `proxy_cache_background_update on` each
+  expired object is refreshed once (a STALE line), and the refreshes were
+  small:
+
+  | Node | Log hours | Static-tier requests | HIT | STALE (refreshes) | Their bytes |
+  |---|---|---|---|---|---|
+  | earth | 19 | 748 k | 3.9% | 10,831 (1.4%) | 0.35 GB |
+  | virgo | 19 | 223 k | 3.2% | 6,358 (2.9%) | 0.18 GB |
+  | titan | 6 | 1,050 k | 23% | 515 | 0.01 GB |
+  | rigel | 4 | 558 k | 1.7% | 322 | 0.01 GB |
+  | mars | 19 | 886 k | 2.8% | 219 | 0.02 GB |
+  | orion | 1 | 125 k | 32% | 0 | 0 |
+
+  (BYPASS, 72-98%, is assets of vhosts without the static tier armed.)
+  - **The ceiling is under 1 GB a day fleet-wide** (earth ~0.45 GB), even if
+    every refresh were a 304. The origins would allow it (ETag or
+    Last-Modified on 119 of the 120 most-refreshed URLs; most send no
+    Cache-Control, so the 1 h fallback applies).
+  - **Those bytes never leave the box:** the edge → origin hop is loopback.
+    The client sees nothing; the gain is a little origin CPU.
+  - **The cost is a Site Cache change** (guards, mutation and parity tests, a
+    canary; cfm CLAUDE.md §6) for a gain no one can see.
+  - **Reopen** if the static tier is armed on many more vhosts and refreshes
+    pass 5-10 GB a day on a node. Then a longer fallback TTL than 1 h is
+    probably the better lever than revalidation (not measured).
 
 ## 8. The .deb (last: no node runs CFM's edge on Debian yet)
 
