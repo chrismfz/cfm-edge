@@ -378,6 +378,30 @@ before and after on the same traffic; nothing ships on reasoning alone.
     Accept-Encoding with the identity body and no `Vary`, and the cache kept
     that copy for everyone. Fixed in cfm PR #1796 (the `$cfm_cache_no_ae`
     rail; after the upgrade, reload the edge, then purge once).
+  - **The rest of the fleet** (same read, 2026-11-24): earth 99% br, rigel
+    98% br, speedhost 78% br + 22% gzip, mars 87% br + 7.5% gzip (its 5.6%
+    identity were Site Cache HITs, the #1796 bug), virgo 96% gzip (Apache
+    `mod_deflate`; one JSON identity, 3.5%). **qualityweb compressed
+    nothing**: 100% identity on its 117 GB of compressible bytes that day, 82%
+    of its sample saved by gzip-6. Apache had `deflate_module` loaded and no
+    `AddOutputFilterByType` anywhere.
+  - **qualityweb fixed at the origin** (2026-11-24): the types in WHM's
+    "Pre Main Include" (`/etc/apache2/conf.d/includes/pre_main_global.conf`,
+    backup in `/root/deflate-20261124/`), config test, graceful restart. Its
+    20 heaviest URLs went from 4.89 MB to 0.92 MB (−81%), all 200, valid
+    gzip, `Vary: Accept-Encoding`; a client without Accept-Encoding still
+    gets identity. Origin bytes in the same 47 s window before and after:
+    85.6 → 19.5 MB (−77%), same requests, same 5xx rate (0.09%).
+- [decided, 2026-11-24] **The edge does not compress; compression belongs to
+  the origin.** The edge passes through whatever the origin sends.
+  - nginx's `gzip` runs after the cache, so every Site Cache HIT would be
+    compressed again; `mod_deflate` / LiteSpeed compress once and the cache
+    keeps the compressed copy.
+  - The origin's choices stay its own (a site that leaves compression off on
+    purpose, e.g. for BREACH, or on already-compressed files).
+  - Traffic that bypasses the edge (DNAT off) is compressed too.
+  - An origin that does not compress is fixed there, as on qualityweb. The
+    check is this read (or the 150-URL script), per node.
 - [decided, 2026-11-24] **No Brotli module.** The origin already sends br and
   the edge passes it through; what was left (gzip → br on titan) is under 1%
   of the bytes. A module is attack surface ("a module goes in when CFM needs
