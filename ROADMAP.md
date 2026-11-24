@@ -193,14 +193,33 @@ already include:
 - `-fstack-clash-protection` and `-fcf-protection`;
 - PIE, RELRO and `-z now`.
 
-- [ ] Run `checksec` (or `readelf`/`hardening-check`) on `/usr/sbin/cfm-edge`,
-  `libluajit-5.1.so` and `cjson.so`, and record the result here.
-  - First read, `/usr/sbin/cfm-edge` 1.31.9-20261120 on rigel (`readelf`):
-    PIE (`DYN`, `FLAGS_1 NOW PIE`), full RELRO (`GNU_RELRO` + `BIND_NOW`),
-    non-executable stack (`GNU_STACK RW`), stack protector
-    (`__stack_chk_fail`), FORTIFY in use (4 `__*_chk` symbols). Not yet
-    checked: `-fcf-protection` / `-fstack-clash-protection` (need
-    `annobin`/`annocheck`), LuaJIT and `cjson.so`.
+- [x] **What every shipped ELF is built with** (2026-11-24, rpm
+  1.31.9-20261123.015907, the same spec and flags as the fleet's .195237):
+  `readelf -n` for the CET property note, and each compile unit's
+  `DW_AT_producer` from the debuginfo rpm (EL records `-grecord-gcc-switches`).
+
+  | | `cfm-edge` (nginx, modules, static OpenSSL) | `libluajit-5.1.so.2` | `cjson.so` |
+  |---|---|---|---|
+  | PIE/PIC, full RELRO, BIND_NOW, NX | yes (`%check` enforces) | yes | yes |
+  | stack protector | 225/225 units | **0/70**: `-fno-stack-protector` | 3/3 |
+  | stack-clash | 225/225 | 70/70 | 3/3 |
+  | CET SHSTK / IBT | both, whole binary | SHSTK only | both |
+  | FORTIFY (`__*_chk`) | yes | yes | yes |
+
+  OpenSSL's objects carry no debuginfo, so they are not among the 225 units,
+  but the linker sets IBT only when every object has `-fcf-protection`, so
+  OpenSSL has it too (and `%check` enforces its flags). LuaJIT's IBT gap is its
+  hand-written asm VM (no ENDBR), an upstream exception. `annocheck` 13.28
+  hangs on `cfm-edge` (all kernel time; system binaries finish at once), so it
+  is not the tool here.
+- [ ] **LuaJIT without the stack protector.** Its Makefile appends
+  `-fno-stack-protector` (and `-fomit-frame-pointer`) after the distro flags,
+  so it wins: none of its 70 C units has a canary. Win: its C parts (string
+  library, `string.format`, the parser, the GC) handle request data through
+  CFM's Lua. Cost: only C functions with local arrays; the hot path (the asm VM
+  and JIT'd code) is untouched. Before a patch (`patches/luajit2/`): find why
+  upstream turns it off (its Makefile / history, not memory), then `test-all`
+  (CFM's Lua in a real nginx), a CPU A/B on the same traffic, and a canary.
 - [x] **`%check` asserts the hardening of every ELF we ship**
   (`packaging/rpm/elf-hardening-check.sh`): every ELF under the buildroot
   (`/usr/sbin/cfm-edge`, `libluajit-5.1.so.2`, `cjson.so`, the luajit CLI,
