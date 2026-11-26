@@ -342,14 +342,40 @@ Done (spec `--without-*`):
 The goal is less CPU per connection and fewer bytes. Each item is measured
 before and after on the same traffic; nothing ships on reasoning alone.
 
-- [ ] **TLS handshakes: full vs resumed, per connection.** Baseline today:
-  `ssl_session_cache shared:cfm_ssl:20m`, `ssl_session_timeout 4h` (CFM's
-  conf).
-  - Count per connection, not per access-log line: `sslr="r"` repeats on
-    every request of an HTTP/2 connection and overstates resumption.
-  - Report CPU-seconds per 1,000 handshakes (and joules if measured).
-  - This is the first measurement for "less CPU per handshake", and the
-    baseline for §3's OpenSSL flags.
+- [x] **TLS handshakes: full vs resumed, per connection** (2026-11-26).
+  Baseline: `ssl_session_cache shared:cfm_ssl:20m`, `ssl_session_timeout 4h`
+  (CFM's conf), session tickets on (TLS 1.3, 4 h lifetime).
+  - **Counted per connection**: the access log carries `conn=` / `creq=`
+    since cfm PR #1799; one `creq=1` line per handshake, HTTPS over HTTP/1.x
+    and HTTP/2. Per line, `sslr="r"` overstated resumption 2-4x.
+  - **Measured, 27-36 h of logs on 7 nodes** (speedhost was being rebuilt):
+
+    | Node | Connections/day | Full/day | Resumed | Never-resume clients (>=20 conns, 0 resumed) |
+    |---|---|---|---|---|
+    | orion | 4.15 M | 4.09 M | 1.5% | 15,792 IPs, 71% of full |
+    | titan | 2.26 M | 2.15 M | 5.3% | 8,731 IPs, 64% |
+    | qualityweb | 1.93 M | 1.68 M | 13.4% | 8,175 IPs, 54% |
+    | earth | 1.28 M | 1.24 M | 3.0% | 8,648 IPs, 72% |
+    | rigel | 1.27 M | 1.24 M | 2.7% | 7,987 IPs, 57% |
+    | mars | 1.16 M | 1.11 M | 3.9% | 6,265 IPs, 79% |
+    | virgo | 0.53 M | 0.51 M | 3.9% | 3,676 IPs, 72% |
+
+  - **Resumption works.** `openssl s_client` resumes over TLS 1.3 (ticket)
+    and TLS 1.2 (session cache), and a real Chrome, revisiting after the idle
+    connection closed, resumed (`sslr="r"` on the new `conn=`). An edge
+    reload does not explain the low ratio either: it stayed flat for 40 min
+    after one.
+  - **The low ratio is the traffic.** 54-79% of the full handshakes come from
+    clients that open dozens to thousands of connections and never resume:
+    on orion an image bot, a farm on 162.128.0.0/16 (~3,200 connections per
+    IP, rotating old browser UAs) and CFM's own `127.0.0.1 Go-http-client`.
+  - **The CPU is small.** At ~0.3-0.4 ms per full handshake (the rigel
+    measurement below), orion's ~47 handshakes/s cost ~2% of one core; the
+    7 nodes together, ~12 M a day, ~6% of one core.
+  - [decided] **No TLS change** (session timeout, persistent ticket keys,
+    and the like): none of them makes a client that never resumes resume.
+    What would cut these handshakes is stopping the farms earlier, which is
+    CFM's abuse defense, not TLS.
   - **RSA-2048 → ECDSA P-256, rigel, 2026-11-23** (233 of 253 certs
     converted by AutoSSL; recipe and raw numbers in `/root/p256bench/` on
     rigel). Full handshakes on loopback, medians:
