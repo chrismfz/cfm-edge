@@ -37,6 +37,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+          # Full history: the human-commit guard below compares the bump
+          # branch with main. In the default depth-1 clone main has no
+          # parents, so every commit of the repo read as "human" (67 on
+          # 2026-11-26) and the guard skipped the nginx 1.31.10 SECURITY
+          # bump for days with a green run.
+          fetch-depth: 0
 
       - name: Check pinned dependencies
         id: check
@@ -77,6 +83,12 @@ jobs:
           if git fetch -q origin "$BRANCH" 2>/dev/null; then
             others="$(git log --format='%ae' "origin/$BASE..FETCH_HEAD" | grep -vc '41898282+github-actions\[bot\]@users.noreply.github.com' || true)"
             if [ "$others" != 0 ]; then
+              # Red for SECURITY, as above: a skipped security bump must not
+              # look like a clean run.
+              if [ "$RC" = 4 ]; then
+                echo "::error::SECURITY bump not pushed: $BRANCH carries $others human commit(s). Merge or close that PR, or bump by hand (make update)."
+                exit 1
+              fi
               echo "::warning::$BRANCH carries $others human commit(s); not force-pushing over them. Merge or close that PR first."
               exit 0
             fi
