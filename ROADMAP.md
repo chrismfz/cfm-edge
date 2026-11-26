@@ -462,9 +462,26 @@ before and after on the same traffic; nothing ships on reasoning alone.
   workers' CPU, so even an infinitely fast match gains under 1%, below what an
   A/B on live traffic can tell from noise. Reopen if PCRE grows past 2-3% of
   worker CPU (for example once CFM's Lua uses `ngx.re`).
-- [ ] **`quic_gso on;`**, only on a node with real HTTP/3 download traffic.
-  Judge it by worker CPU per GiB and throughput on the same download. Read the
-  H3 share with the TLS item first.
+- [ ] **`quic_gso on;`: the package cannot do it yet, and it waits for real
+  HTTP/3 traffic** (checked 2026-11-26).
+  - **The EL8 build compiles it out.** nginx builds its GSO path only when
+    `<netinet/udp.h>` defines `UDP_SEGMENT` (`auto/os/linux`); EL8's
+    glibc-headers 2.28 defines it only in `<linux/udp.h>`. The directive is
+    still accepted, so `quic_gso on` would pass `-t` and change nothing. The
+    kernel and NIC can do it (EL8 4.18, `tx-udp-segmentation: on` on virgo).
+    To confirm, the `checking for UDP_SEGMENT` line of an EL8 build.
+  - **Enabling it means a patch** (`patches/nginx/NNNN-…`: define
+    `UDP_SEGMENT 103` when the libc header lacks it), a new rpm and the usual
+    EL8/9/10 tests and canary.
+  - **Why not now.** It saves worker CPU on bulk QUIC sends, and HTTP/3
+    carries almost nothing: Alt-Svc is per-vhost opt-in, and only infected.gr
+    on virgo has it (enabled 2026-11-26 for the nginx/nginx#1407 test). It
+    also sends in bursts of up to 64 KB, which may hurt on the lossy mobile
+    paths of #1407; nginx keeps it off by default.
+  - **Reopen** when HTTP/3 is on for enough vhosts to show in worker CPU.
+    Judge it by worker CPU per GiB and throughput on the same download, with
+    and without, and watch the `bytes=65536` / `bytes=262144` with `rt=60`
+    stalls on `proto="HTTP/3.0"` lines.
 - [decided, 2026-11-24] **No `proxy_cache_revalidate` on Site Cache's static
   tier.** Measured from the day's access logs, static tier only
   (`up=cfm_apache_static`): with `proxy_cache_background_update on` each
