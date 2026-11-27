@@ -1,0 +1,17 @@
+# The package's files under /etc, for BOTH packages. One line each:
+#   <path without the leading slash> <mode>
+#
+# rpm: each is %config(noreplace) in packaging/rpm/cfm-edge.spec.
+# deb: NONE is a dpkg conffile. CFM rewrites /etc/cfm-edge/nginx.conf when it
+# adopts the edge, so as a conffile every upgrade that changed the placeholder
+# would stop dpkg at its "Configuration file ... (Y/I/N/O/D/Z)" question:
+# `apt upgrade -y` cannot answer it and unattended-upgrades skips the package
+# (cfm PR #1770 had the same problem with /etc/cfm). The .deb ships the
+# defaults under /usr/share/cfm-edge/defaults/ and its postinst seeds /etc
+# the way the rpm's %config(noreplace) does (packaging/deb/postinst).
+#
+# tools/build-deb.sh refuses a package with any other file under /etc, and
+# tests/config-files_test.sh (make lint) pins this list to the spec.
+etc/cfm-edge/nginx.conf 0644
+etc/cfm-edge/mime.types 0644
+etc/logrotate.d/cfm-edge 0644

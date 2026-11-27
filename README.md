@@ -109,9 +109,13 @@ is the job of CFM's `install-edge.sh`.
 (2.28; glibc is backward compatible), and the same rpm is installed and tested
 on EL8, EL9 and EL10. It needs only glibc, pcre2 and zlib from the system,
 plus libmaxminddb (FFI); OpenSSL is static and LuaJIT is private. The same
-binary also runs on Debian 10+ and Ubuntu 20.04+, which is why private files
-live under `/usr/lib/cfm-edge` and not `/usr/lib64`. The .deb is a later step
-(HANDOFF.md). A *fully* static nginx is not an option: `cjson.so` is
+binary also runs on Debian and Ubuntu, which is why private files live under
+`/usr/lib/cfm-edge` and not `/usr/lib64`. **`make deb`** repacks that rpm as
+`dist/deb/cfm-edge_<v>-<r>_amd64.deb` for Debian 12+ / Ubuntu 22.04+ (the
+unit's `ProtectProc=` needs systemd 247): the same files, with no dpkg
+conffile (`/etc` is seeded by postinst from `/usr/share/cfm-edge/defaults/`,
+`packaging/config-files.list`) and the upgrade restart as a dpkg trigger;
+`tools/build-deb.sh` lists every difference. A *fully* static nginx is not an option: `cjson.so` is
 dlopen'ed, `libmaxminddb` comes in through the FFI, and `user cfm;` needs
 NSS. All three break in a static binary.
 
@@ -128,6 +132,8 @@ and verifies sources and drives those containers:
   quay.io and the AlmaLinux mirrors.
 - `shellcheck` (`make lint`, which `make release` runs first; EL: `dnf
   install ShellCheck` from EPEL).
+- `rpm2cpio`, `cpio` and `dpkg-deb` for `make deb` (EL: `dnf install cpio
+  dpkg`, dpkg from EPEL).
 - Optional: `ssh` + `rsync` and a key for repo.nixpal.com (`make sync`).
 - About 3 GB of disk for images and the build tree.
 

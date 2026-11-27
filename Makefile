@@ -9,6 +9,7 @@
 #   make help         every target, one line each
 #   make doctor       does this host have what a build needs?
 #   make package      THE shipped rpm: built in AlmaLinux 8 -> dist/el8/
+#   make deb          the same files as a .deb (repacked, not rebuilt) -> dist/deb/
 #   make test-all     smoke + cfm-conf of that rpm on EL8, EL9 and EL10
 #   make sync         upload that rpm to repo.nixpal.com (only if test-all passed)
 #
@@ -77,7 +78,7 @@ RPM_DEFINES := \
 # A bare `make` shows the help (it used to fetch the sources: `make sources`).
 .DEFAULT_GOAL := help
 
-.PHONY: help sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean distclean release
+.PHONY: help sources stage rpm srpm rpms rpm-el8 rpm-el9 rpm-el10 package deb test-all doctor check update sync smoke-el8 smoke-el9 smoke-el10 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10 lint clean distclean release
 
 
 # `make help`: every target with its `## description`, as cfm's Makefile does.
@@ -116,6 +117,11 @@ rpms: rpm-el8 rpm-el9 rpm-el10 ## Build on all three (diagnostics; the shipped r
 
 package: rpm-el8 ## THE shipped rpm: built on EL8 -> dist/el8/
 
+# The .deb is THE rpm's files repacked (tools/build-deb.sh says why and what
+# changes), so it never needs a build of its own: make package first.
+deb: ## The shipped rpm repacked as a .deb (Debian 12+ / Ubuntu 22.04+) -> dist/deb/
+	tools/build-deb.sh
+
 # The el8-built rpm, installed into each image (IMAGE= overrides the image,
 # not which rpm: tools/container-build.sh 8 reads dist/el8).
 test-all: ## Smoke + CFM config tests of that rpm on EL8, EL9 and EL10 (stamps .tested)
@@ -148,6 +154,8 @@ doctor: ## Does this host have what a build needs?
 	  command -v $$t >/dev/null && echo "✓ $$t" || { echo "✗ $$t   (build: make sources / check-deps)"; miss=1; }; done; \
 	for t in ssh rsync; do \
 	  command -v $$t >/dev/null && echo "✓ $$t" || echo "• $$t   (only for make sync)"; done; \
+	for t in rpm2cpio cpio dpkg-deb; do \
+	  command -v $$t >/dev/null && echo "✓ $$t" || { echo "✗ $$t   (make deb; EL: dnf install dpkg cpio, EPEL for dpkg)"; miss=1; }; done; \
 	command -v shellcheck >/dev/null && echo "✓ shellcheck" \
 	  || { echo "✗ shellcheck   (make lint / make release; EL: dnf install ShellCheck, from EPEL)"; miss=1; }; \
 	for u in https://nginx.org/download/ https://quay.io https://repo.almalinux.org/almalinux/; do \
@@ -210,11 +218,12 @@ smoke-el8 smoke-el9 smoke-el10: ## Smoke the rpm built for that EL (dist/elN) in
 cfm-conf-el8 cfm-conf-el9 cfm-conf-el10: ## CFM's real edge config + Lua on that EL's rpm (CFM_DIR=../cfm)
 	tools/container-build.sh $(subst cfm-conf-el,,$@) cfm-conf
 
-lint: ## bash -n + shellcheck + py_compile + the upgrade-restart test
-	for f in tools/*.sh tests/*.sh; do bash -n "$$f"; done
-	shellcheck -S warning tools/*.sh tests/*.sh packaging/rpm/*.sh
+lint: ## bash -n + shellcheck + py_compile + the upgrade-restart and config-files tests
+	for f in tools/*.sh tests/*.sh packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm; do bash -n "$$f"; done
+	shellcheck -S warning tools/*.sh tests/*.sh packaging/rpm/*.sh packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm
 	python3 -m py_compile tools/*.py
 	bash tests/upgrade-restart_test.sh
+	bash tests/config-files_test.sh
 
 clean: ## Remove build/ and dist/
 	rm -rf build dist

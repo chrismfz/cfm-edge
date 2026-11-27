@@ -9,6 +9,33 @@ Fixed / Hardened / Security / Removed**.
 ## [Unreleased]
 
 ### Added
+- **`make deb`: a .deb for Debian 12+ / Ubuntu 22.04+**
+  (`cfm-edge_<v>-<r>_amd64.deb`). It is the shipped EL8 rpm repacked, not a
+  second build, so Debian runs the very binary the EL8 build checked.
+  - **No dpkg conffile.** CFM rewrites `/etc/cfm-edge/nginx.conf`, so a
+    conffile would stop every `apt upgrade -y` at dpkg's question. The
+    defaults ship under `/usr/share/cfm-edge/defaults/`, and postinst seeds
+    `/etc` the way the rpm's `%config(noreplace)` does: a missing file gets the
+    default, an untouched one the new default, an edited one stays, with the
+    new default beside it as `.dpkg-dist` when it changed.
+    `packaging/config-files.list` is the one list for both packages
+    (`tests/config-files_test.sh` in `make lint`).
+  - **The upgrade restart** runs from a dpkg trigger, at the end of the dpkg
+    run, like the rpm's posttrans: the same `upgrade-restart.sh`. The unit is
+    never enabled or started by the package.
+  - Depends on `iproute2`: `upgrade-restart.sh` reads the edge's listen with
+    `ss`, and without it a restart would read as failed and leave CFM's DNAT
+    off. Depends on `procps`: the unit's `ExecReload` runs `/bin/kill`, which
+    a minimal Debian does not have, so every reload (CFM reloads the edge on
+    a cert or config change) would fail. `curl` is recommended (its serve
+    check); `cfm` is only suggested, so installing the edge does not pull in
+    the daemon (the rpm does not either).
+  - Purge removes the seeded files still as installed (an edited one stays)
+    and `/var/lib/cfm-edge` (nginx's temp dirs, the sums); the logs stay.
+  - The placeholder `nginx.conf` names Debian's `nogroup`
+    (`user nobody nogroup;`): Debian has no `nobody` group, and `-t` failed.
+  - Not yet in `make release` / `make sync`, and no Debian tests in
+    `test-all` yet: those come next.
 - **`make release`** runs the whole pre-publish chain in order (`lint`,
   `package`, `test-all`), so a release is `make release && make sync`;
   **`make distclean`** also drops the fetched `SOURCES/`.

@@ -1,0 +1,37 @@
+#!/bin/sh
+# cfm-edge .deb postrm: reload systemd after a removal; on purge, remove the
+# /etc files postinst seeded (only those still as we installed them: an edited
+# one stays, as dpkg leaves an edited conffile) and /var/lib/cfm-edge. The
+# logs stay.
+set -e
+
+SUMS=/var/lib/cfm-edge/config-files.sha256
+
+case "$1" in
+remove)
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || :
+    fi
+    ;;
+purge)
+    if [ -f "$SUMS" ]; then
+        while read -r sum rel; do
+            [ -n "$rel" ] || continue
+            dst=/$rel
+            rm -f "$dst.dpkg-dist" "$dst.dpkg-new"
+            if [ "$sum" != "-" ] && [ -f "$dst" ] && [ ! -L "$dst" ] \
+                && [ "$(sha256sum "$dst" | cut -d' ' -f1)" = "$sum" ]; then
+                rm -f "$dst"
+            fi
+        done <"$SUMS"
+        rm -f "$SUMS"
+    fi
+    rmdir /etc/cfm-edge 2>/dev/null || :
+    # The edge's own state dir: nginx's temp dirs (client_body, proxy, ...)
+    # and the sums file, nothing CFM keeps (CFM's state is /var/lib/cfm). The
+    # logs in /var/log/cfm-edge stay: they are evidence, not state.
+    rm -rf /var/lib/cfm-edge
+    ;;
+esac
+
+exit 0
