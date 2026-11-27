@@ -512,6 +512,14 @@ before and after on the same traffic; nothing ships on reasoning alone.
 
 ## 8. The .deb (last: no node runs CFM's edge on Debian yet)
 
+- [x] **`make deb` (2026-11-27):** `tools/build-deb.sh` repacks the shipped
+  rpm, with the seeding, the trigger and the shared list described below.
+  Checked by hand in containers: install, `-t` and the placeholder serving
+  (200) on Debian 12 / 13 and Ubuntu 22.04 / 24.04; on Debian 13 a reinstall,
+  an upgrade with changed defaults (an edited file kept with its
+  `.dpkg-dist`, an untouched one replaced) and a purge. Next: Debian / Ubuntu in `test-all`,
+  then `release` / `sync`, then CFM's `install-edge.sh` on apt, and the
+  canary (ngm-debian, Debian 13).
 - [ ] **A .deb of the same EL8-built tree**, built with `dpkg-deb` the way
   cfm's Makefile builds its own (HANDOFF.md step 6). The paths are already
   distro-neutral (`/usr/lib/cfm-edge`), and the binary needs only glibc,

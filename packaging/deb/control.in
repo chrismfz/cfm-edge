@@ -1,0 +1,19 @@
+Package: cfm-edge
+Version: @VERSION@
+Architecture: amd64
+Maintainer: cfm-edge builder <noreply@nixpal.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: libc6 (>= 2.28), libpcre2-8-0, zlib1g, libmaxminddb0, logrotate, iproute2
+Recommends: cfm, curl
+Section: httpd
+Priority: optional
+Homepage: https://github.com/chrismfz/cfm-edge
+Description: CFM edge proxy: nginx with the CFM Lua stack
+ nginx.org nginx with the OpenResty Lua set (LuaJIT2, lua-nginx-module,
+ lua-resty-core and friends) and a static OpenSSL, packaged for CFM's
+ in-path WAF, challenge and Site Cache. Installs to /usr/sbin/cfm-edge,
+ /etc/cfm-edge and /var/log/cfm-edge, beside any other nginx.
+ .
+ The same binary as the EL rpm (built on EL8, glibc 2.28). The unit is not
+ enabled: CFM's install-edge.sh prepares the edge and `cfm edge` puts it in
+ the path.

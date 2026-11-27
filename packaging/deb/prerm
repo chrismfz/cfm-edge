@@ -1,0 +1,18 @@
+#!/bin/sh
+# cfm-edge .deb prerm: the rpm's preun (systemd_preun). On a removal, not an
+# upgrade, stop and disable the unit. An upgrade leaves it running: the
+# postinst trigger restarts it safely (upgrade-restart.sh).
+#
+# Removing the edge while CFM's DNAT sends 80/443 to it takes the sites down:
+# take it out of the path first (`cfm edge off`).
+set -e
+
+case "$1" in
+remove)
+    if [ -d /run/systemd/system ]; then
+        systemctl --no-reload disable --now cfm-edge.service >/dev/null 2>&1 || :
+    fi
+    ;;
+esac
+
+exit 0
