@@ -25,7 +25,13 @@ Fixed / Hardened / Security / Removed**.
     never enabled or started by the package.
   - Depends on `iproute2`: `upgrade-restart.sh` reads the edge's listen with
     `ss`, and without it a restart would read as failed and leave CFM's DNAT
-    off. `curl` is recommended (its serve check).
+    off. Depends on `procps`: the unit's `ExecReload` runs `/bin/kill`, which
+    a minimal Debian does not have, so every reload (CFM reloads the edge on
+    a cert or config change) would fail. `curl` is recommended (its serve
+    check); `cfm` is only suggested, so installing the edge does not pull in
+    the daemon (the rpm does not either).
+  - Purge removes the seeded files still as installed (an edited one stays)
+    and `/var/lib/cfm-edge` (nginx's temp dirs, the sums); the logs stay.
   - The placeholder `nginx.conf` names Debian's `nogroup`
     (`user nobody nogroup;`): Debian has no `nobody` group, and `-t` failed.
   - Not yet in `make release` / `make sync`, and no Debian tests in

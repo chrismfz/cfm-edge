@@ -3,8 +3,9 @@ Version: @VERSION@
 Architecture: amd64
 Maintainer: cfm-edge builder <noreply@nixpal.com>
 Installed-Size: @INSTALLED_SIZE@
-Depends: libc6 (>= 2.28), libpcre2-8-0, zlib1g, libmaxminddb0, logrotate, iproute2
-Recommends: cfm, curl
+Depends: libc6 (>= 2.28), libpcre2-8-0, zlib1g, libmaxminddb0, logrotate, iproute2, procps
+Recommends: curl
+Suggests: cfm
 Section: httpd
 Priority: optional
 Homepage: https://github.com/chrismfz/cfm-edge

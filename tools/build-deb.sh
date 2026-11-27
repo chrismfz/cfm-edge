@@ -16,11 +16,16 @@
 #     Any other /etc file in the rpm fails the build;
 #   - the EL-only /usr/lib/.build-id links are dropped;
 #   - the placeholder nginx.conf names Debian's nogroup (see below);
+#   - /usr/share/doc/cfm-edge/copyright, from the rpm's license file;
 #   - maintainer scripts from packaging/deb/ (the rpm's post / preun / postun /
 #     posttrans, the last as a dpkg trigger).
 #
 # Needs rpm2cpio, cpio and dpkg-deb (make doctor checks them).
 set -euo pipefail
+# The tree's modes come from the rpm, but the directories this script creates
+# (DEBIAN, usr/share/cfm-edge/defaults, ...) take the umask: under a builder's
+# 077 dpkg-deb refuses DEBIAN (0700), and the rest would ship 0700.
+umask 022
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RPM="${1:-}"
@@ -73,6 +78,12 @@ for rel in $listed; do
     mv "$root/$rel" "$defaults/$rel"
 done
 install -m 0644 "$list" "$root/usr/share/cfm-edge/config-files.list"
+
+# Debian policy wants /usr/share/doc/<package>/copyright; the rpm keeps its
+# %license in /usr/share/licenses/cfm-edge/ (nginx's LICENSE).
+lic="$(find "$root/usr/share/licenses/cfm-edge" -maxdepth 1 -type f -name LICENSE 2>/dev/null | head -n1)"
+[ -n "$lic" ] || { echo "build-deb: the rpm carries no /usr/share/licenses/cfm-edge/LICENSE" >&2; exit 1; }
+install -D -m 0644 "$lic" "$root/usr/share/doc/cfm-edge/copyright"
 
 # The placeholder's `user nobody;` takes the group of the same name, which EL
 # has and Debian does not (its nobody's group is nogroup): there `-t` fails
