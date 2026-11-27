@@ -30,12 +30,25 @@ Fixed / Hardened / Security / Removed**.
     a cert or config change) would fail. `curl` is recommended (its serve
     check); `cfm` is only suggested, so installing the edge does not pull in
     the daemon (the rpm does not either).
+  - postinst creates `/run/cfm-edge` itself when there is no
+    `systemd-tmpfiles` (a container without systemd), as the tmpfiles line
+    says: `cfm-edge -t` opens the pid file and failed without it.
   - Purge removes the seeded files still as installed (an edited one stays)
     and `/var/lib/cfm-edge` (nginx's temp dirs, the sums); the logs stay.
   - The placeholder `nginx.conf` names Debian's `nogroup`
     (`user nobody nogroup;`): Debian has no `nobody` group, and `-t` failed.
-  - Not yet in `make release` / `make sync`, and no Debian tests in
-    `test-all` yet: those come next.
+  - Not yet in `make sync`: that comes next.
+- **`make test-all` (and CI) test the .deb too**: smoke + cfm-conf on Debian
+  12 / 13 and Ubuntu 22.04 / 24.04 (`tools/container-build.sh deb`, images from
+  mirror.gcr.io, Docker Hub's library mirror without a pull limit). It repacks
+  the .deb from the rpm it tests first, and stamps both (`dist/deb/.tested`).
+  The smoke adds the .deb's own checks: the restart trigger, no restart in
+  prerm / postrm, no dpkg conffile, `/etc` seeded.
+  - The tests name the workers' group (`user nobody nogroup` on Debian /
+    Ubuntu, `nobody` on EL): `user nobody;` alone failed there.
+  - The QUIC handshake check now skips by the system OpenSSL (< 3.2 has no
+    QUIC client: EL8, Debian 12, Ubuntu), not by "EL8"; EL9, EL10 and Debian
+    13 run it.
 - **`make release`** runs the whole pre-publish chain in order (`lint`,
   `package`, `test-all`), so a release is `make release && make sync`;
   **`make distclean`** also drops the fetched `SOURCES/`.

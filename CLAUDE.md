@@ -81,16 +81,19 @@ a canary**.
   checkout is missing. Its only skips are written-down environment limits:
   the resty.openssl mTLS WARN (also present on OpenResty nodes), and the
   `setrlimit` alert only when the hard nofile really is below what CFM asks
-  for. `smoke.sh` skips the QUIC handshake on EL8 only (its OpenSSL 1.1.1 has
-  no QUIC client; EL9 and EL10 run it, so every `test-all` does), and the
-  curl HTTP/3 request where curl lacks HTTP/3 (every EL curl today).
+  for. `smoke.sh` skips the QUIC handshake only where the system OpenSSL is
+  older than 3.2, the first with a QUIC client (EL8's 1.1.1, Debian 12's and
+  Ubuntu 22.04 / 24.04's 3.0; EL9, EL10 and Debian 13 run it, so every
+  `test-all` does), and the curl HTTP/3 request where curl lacks HTTP/3
+  (every EL curl today; Debian 13's has it).
 
 ## Before you push
 
 ```sh
 make release      # = make lint package test-all: build on EL8 (its %check
                   #   enforces the ELF + OpenSSL hardening); smoke + cfm-conf
-                  #   on EL8/9/10 (CFM_DIR=../cfm), which stamps it for make sync
+                  #   of the rpm on EL8/9/10 and of its .deb on Debian 12/13 +
+                  #   Ubuntu 22.04/24.04 (CFM_DIR=../cfm), which stamps both
 ```
 
 - **Publish only what was tested.** `make sync` uploads only an rpm whose bytes

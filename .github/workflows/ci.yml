@@ -2,7 +2,8 @@ name: ci
 
 # Every PR and main: lint; build THE rpm once in AlmaLinux 8; install that same
 # rpm on EL8, EL9 and EL10 and run the smoke test and CFM's REAL edge config
-# and Lua on it (tests/cfm-conf.sh). The rpm is kept as an artifact.
+# and Lua on it (tests/cfm-conf.sh); repack it as the .deb and run the same two
+# tests on Debian 12/13 and Ubuntu 22.04/24.04. Both are kept as artifacts.
 #
 # The cfm-conf job reads chrismfz/cfm. If that repo is private, add a
 # fine-grained read-only token as the CFM_READ_TOKEN secret; without it the
@@ -40,10 +41,17 @@ jobs:
         run: sudo apt-get install -y -qq gpgv >/dev/null && make sources
       - name: build in AlmaLinux 8
         run: make package
+      - name: repack it as the .deb
+        run: sudo apt-get install -y -qq rpm2cpio cpio >/dev/null && make deb
       - uses: actions/upload-artifact@v4
         with:
           name: cfm-edge-rpm
           path: dist/el8/*.rpm
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfm-edge-deb
+          path: dist/deb/*.deb
           retention-days: 14
 
   # ...and that SAME rpm installed and tested on each EL.
@@ -73,3 +81,32 @@ jobs:
         run: tools/container-build.sh 8 smoke
       - name: cfm-conf (CFM's real edge config + Lua)
         run: CFM_DIR="$GITHUB_WORKSPACE/cfm" EDGE_NOFILE=1048576 tools/container-build.sh 8 cfm-conf
+
+  # ...and its .deb (the same files, repacked) on Debian and Ubuntu.
+  test-deb:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "debian:13", "ubuntu:22.04", "ubuntu:24.04"]
+    name: test on ${{ matrix.image }}
+    env:
+      # Google's mirror of Docker Hub's library images (no pull rate limit).
+      IMAGE: mirror.gcr.io/library/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: chrismfz/cfm
+          path: cfm
+          token: ${{ secrets.CFM_READ_TOKEN || github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cfm-edge-deb
+          path: dist/deb
+      - name: smoke
+        run: tools/container-build.sh deb smoke
+      - name: cfm-conf (CFM's real edge config + Lua)
+        run: CFM_DIR="$GITHUB_WORKSPACE/cfm" EDGE_NOFILE=1048576 tools/container-build.sh deb cfm-conf

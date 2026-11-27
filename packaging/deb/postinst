@@ -105,9 +105,13 @@ configure)
     chmod o-rwx /var/log/cfm-edge/* 2>/dev/null || :
     # The pid dir exists from the next boot through tmpfiles.d; create it now,
     # before the upgrade restart and before any `cfm-edge -t` CFM runs.
+    # Without systemd-tmpfiles (a host or container without systemd), make it
+    # as the tmpfiles line says (d /run/cfm-edge 0755 root root): -t opens the
+    # pid file, so it fails without the dir.
     if command -v systemd-tmpfiles >/dev/null 2>&1; then
         systemd-tmpfiles --create cfm-edge.conf >/dev/null 2>&1 || :
     fi
+    [ -d /run/cfm-edge ] || install -d -m 0755 -o root -g root /run/cfm-edge || :
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null 2>&1 || :
     fi
