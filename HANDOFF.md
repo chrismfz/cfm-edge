@@ -53,9 +53,9 @@ step lands; delete a section once the code and README say the same thing.
 2. **Devbox build + publish.** The devbox is AlmaLinux 10 with podman, which
    is enough: EL8 is only the container image, so no EL8 machine is needed.
    `ENGINE=podman make package test-all`, then `make sync`. That is the same
-   upload as cfm's, and `make sync` refuses untested or already-published
-   rpms. Then, as root on repo.nixpal.com, run
-   `/root/repos-update.sh --rpm-only` to sign and publish to `/el/`
+   upload as cfm's: the rpm and its .deb, and `make sync` refuses untested or
+   already-published packages. Then, as root on repo.nixpal.com, run
+   `/root/repos-update.sh` to sign and publish to `/el/` and `/debian/`
    (README, "Release flow").
 3. **CFM integration** (cfm repo, one small PR each):
    - `scripts/install-edge.sh`, modelled on `install-angie.sh`. It renders

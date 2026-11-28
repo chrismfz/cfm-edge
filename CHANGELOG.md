@@ -37,7 +37,12 @@ Fixed / Hardened / Security / Removed**.
     and `/var/lib/cfm-edge` (nginx's temp dirs, the sums); the logs stay.
   - The placeholder `nginx.conf` names Debian's `nogroup`
     (`user nobody nogroup;`): Debian has no `nobody` group, and `-t` failed.
-  - Not yet in `make sync`: that comes next.
+- **`make sync` uploads the .deb too**, with the rpm (both are checked before either goes):
+  `~/packages/deb` on repo.nixpal.com, which `/root/repos-update.sh` (no
+  `--rpm-only` now) adds to the `/debian/` repo. It refuses a .deb that did not
+  pass `make test-all` (`dist/deb/.tested`), one that is not the rpm's repack,
+  and a filename `~/packages/deb` or `/debian/pool/main/c/cfm-edge/` already
+  has. `cfm-edge-checksums.txt` carries both sums.
 - **`make test-all` (and CI) test the .deb too**: smoke + cfm-conf on Debian
   12 / 13 and Ubuntu 22.04 / 24.04 (`tools/container-build.sh deb`, images from
   mirror.gcr.io, Docker Hub's library mirror without a pull limit). It repacks

@@ -201,23 +201,27 @@ make sync                               # upload to repo.nixpal.com (like cfm)
 The usual way in is the check-deps PR (CI green, then merge); `make update`
 does the same locally when you won't wait for it.
 
-`make sync` uploads only `cfm-edge-<v>-<r>.x86_64.rpm` (no debuginfo or src)
-to `chris@repo.nixpal.com:~/packages/rpm`, plus
-`~/packages/cfm-edge-checksums.txt`. It never touches cfm's `checksums.txt`.
-It **refuses**:
+`make sync` uploads, together, `cfm-edge-<v>-<r>.x86_64.rpm` (no debuginfo
+or src) to `chris@repo.nixpal.com:~/packages/rpm` and its
+`cfm-edge_<v>-<r>_amd64.deb` to `~/packages/deb`, plus
+`~/packages/cfm-edge-checksums.txt` (both sums). It never touches cfm's
+`checksums.txt`. It **refuses**:
 
-- an rpm whose exact bytes did not pass `make test-all` (`dist/el8/.tested`);
-- a filename the repo already has, in `~/packages/rpm` or under
-  `https://repo.nixpal.com/el/`. Every build has its own timestamp, so this
-  catches only a `BUILD_STAMP=` reuse that would silently change a published
-  package.
+- a package whose exact bytes did not pass `make test-all`
+  (`dist/el8/.tested`, `dist/deb/.tested`);
+- a .deb that is not the rpm's repack (another version);
+- a filename the repo already has, in `~/packages/rpm` / `~/packages/deb`, or
+  under `https://repo.nixpal.com/el/` / `/debian/pool/main/c/cfm-edge/`.
+  Every build has its own timestamp, so this catches only a `BUILD_STAMP=`
+  reuse that would silently change a published package.
 
-`FORCE=1` overrides both, knowingly.
+`FORCE=1` overrides those checks, knowingly.
 
 Publishing is the same as for cfm. As root on repo.nixpal.com, run
-`/root/repos-update.sh --rpm-only`. It signs with the NixPal key, runs
-createrepo into `/el/`, and signs the repomd. Nodes see it there
-(`gpgcheck=1`).
+`/root/repos-update.sh`. It signs the rpm with the NixPal key, runs
+createrepo into `/el/` and signs the repomd (`gpgcheck=1`), and adds the
+newest .deb of each package to the `/debian/` repo with reprepro (signed
+Release). `--rpm-only` / `--deb-only` publish one side.
 
 Then **canary** on one host (qualityweb) and keep `edge_health` clean for N
 hours before any other node upgrades. The rpm never restarts blindly

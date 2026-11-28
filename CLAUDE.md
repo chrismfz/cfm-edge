@@ -98,9 +98,9 @@ make release      # = make lint package test-all: build on EL8 (its %check
                   #   Ubuntu 22.04/24.04 (CFM_DIR=../cfm), which stamps both
 ```
 
-- **Publish only what was tested.** `make sync` uploads only an rpm whose bytes
-  `make test-all` stamped (`dist/el8/.tested`), and never one whose filename
-  the repo already has. Release is the build time (UTC), so a new build is
+- **Publish only what was tested.** `make sync` uploads the rpm and its .deb
+  together, only when `make test-all` stamped both (`dist/el8/.tested`,
+  `dist/deb/.tested`), and never one whose filename the repo already has. Release is the build time (UTC), so a new build is
   always a new, newer package; never reuse `BUILD_STAMP=` for a different
   build. Don't make `FORCE=1` the habit.
 
