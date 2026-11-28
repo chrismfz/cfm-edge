@@ -81,11 +81,13 @@ a canary**.
   checkout is missing. Its only skips are written-down environment limits:
   the resty.openssl mTLS WARN (also present on OpenResty nodes), and the
   `setrlimit` alert only when the hard nofile really is below what CFM asks
-  for. `smoke.sh` skips the QUIC handshake only where the system OpenSSL is
-  older than 3.2, the first with a QUIC client (EL8's 1.1.1, Debian 12's and
-  Ubuntu 22.04 / 24.04's 3.0; EL9, EL10 and Debian 13 run it, so every
-  `test-all` does), and the curl HTTP/3 request where curl lacks HTTP/3
-  (every EL curl today; Debian 13's has it).
+  for. `smoke.sh` fails when the checks of the package it was told it tests
+  (`CFM_EDGE_PKG`, set by `container-build.sh`) did not run. It skips the
+  QUIC handshake only where the system OpenSSL is older than 3.2, the first
+  with a QUIC client (EL8's 1.1.1, Debian 12's and Ubuntu 22.04 / 24.04's
+  3.0; EL9, EL10 and Debian 13 run it, so every `test-all` does); an
+  unreadable openssl version fails it. It also skips the curl HTTP/3 request
+  where curl lacks HTTP/3 (every EL curl today; Debian 13's has it).
 
 ## Before you push
 
@@ -114,8 +116,10 @@ make release      # = make lint package test-all: build on EL8 (its %check
 
 ## Environment notes
 
-- Docker Hub rate-limits anonymous pulls: images come from
-  `quay.io/almalinuxorg/almalinux`.
+- Docker Hub rate-limits anonymous pulls: the EL images come from
+  `quay.io/almalinuxorg/almalinux`, the Debian / Ubuntu ones (the .deb's
+  tests) from `mirror.gcr.io/library`, Google's mirror of Docker Hub's
+  library images.
 - In a Claude cloud session, outbound traffic is HTTPS-only through a proxy,
   and GitHub's `codeload` (archive tarballs) is blocked while `git` works. That
   is one reason modules are git-pinned. `EDGE_CA` makes the containers trust

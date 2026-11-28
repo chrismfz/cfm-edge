@@ -86,7 +86,7 @@ if [ "$EL" = deb ]; then
     smoke)
         # shellcheck disable=SC2016
         "$ENGINE" "${args[@]}" -v "${OUT}:/debs:ro${Z}" "$IMAGE" bash -c "$deb_prologue"'
-            bash /src/tests/smoke.sh
+            CFM_EDGE_PKG=deb bash /src/tests/smoke.sh
         '
         ;;
     cfm-conf)
@@ -133,7 +133,7 @@ smoke)
     # shellcheck disable=SC2016
     "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro${Z}" "$IMAGE" bash -c "$prologue"'
         dnf -q -y install --allowerasing curl procps-ng openssl binutils logrotate /rpms/cfm-edge-[0-9]*.x86_64.rpm >/dev/null
-        bash /src/tests/smoke.sh
+        CFM_EDGE_PKG=rpm bash /src/tests/smoke.sh
     '
     ;;
 cfm-conf)
