@@ -10,7 +10,8 @@
 #   make doctor       does this host have what a build needs?
 #   make package      THE shipped rpm: built in AlmaLinux 8 -> dist/el8/
 #   make deb          the same files as a .deb (repacked, not rebuilt) -> dist/deb/
-#   make test-all     smoke + cfm-conf of that rpm on EL8, EL9 and EL10
+#   make test-all     smoke + cfm-conf of that rpm on EL8, EL9 and EL10, and of
+#                     its .deb on Debian 12/13 and Ubuntu 22.04/24.04
 #   make sync         upload that rpm to repo.nixpal.com (only if test-all passed)
 #
 #   make check        report which pins are behind upstream (changes nothing)
@@ -39,7 +40,12 @@ REMOTE_DIR  ?= ~/packages/
 RSYNC_FLAGS ?= -av --partial --inplace
 SSH_CMD     ?= ssh -p $(REMOTE_PORT)
 PKG_DIR     := dist/el8
-TOPDIR       := $(CURDIR)/build/rpmbuild
+DEB_DIR     := dist/deb
+# The .deb's test images: mirror.gcr.io is Google's mirror of Docker Hub's
+# library images (Docker Hub rate-limits anonymous pulls).
+DEB_IMAGES  ?= mirror.gcr.io/library/debian:12 mirror.gcr.io/library/debian:13 \
+               mirror.gcr.io/library/ubuntu:22.04 mirror.gcr.io/library/ubuntu:24.04
+TOPDIR      := $(CURDIR)/build/rpmbuild
 CHANGELOG_DATE := $(shell LC_ALL=C date -u '+%a %b %d %Y')
 # The package Release: build time in UTC, computed ONCE here on the host and
 # exported, so the container's own `make rpm` uses the same value (and
@@ -123,20 +129,27 @@ deb: ## The shipped rpm repacked as a .deb (Debian 12+ / Ubuntu 22.04+) -> dist/
 	tools/build-deb.sh
 
 # The el8-built rpm, installed into each image (IMAGE= overrides the image,
-# not which rpm: tools/container-build.sh 8 reads dist/el8).
-test-all: ## Smoke + CFM config tests of that rpm on EL8, EL9 and EL10 (stamps .tested)
-	rm -f $(PKG_DIR)/.tested
+# not which rpm: tools/container-build.sh 8 reads dist/el8), then its .deb
+# (repacked here first, so it is THIS rpm's) in each of DEB_IMAGES.
+test-all: ## Smoke + CFM config tests: the rpm on EL8/9/10, its .deb on Debian 12/13 + Ubuntu 22.04/24.04 (stamps .tested)
+	rm -f $(PKG_DIR)/.tested $(DEB_DIR)/.tested
+	tools/build-deb.sh
 	for img in 8 9 10; do \
 	  IMAGE=quay.io/almalinuxorg/almalinux:$$img tools/container-build.sh 8 smoke && \
 	  IMAGE=quay.io/almalinuxorg/almalinux:$$img tools/container-build.sh 8 cfm-conf || exit 1; \
 	done
+	for img in $(DEB_IMAGES); do \
+	  IMAGE=$$img tools/container-build.sh deb smoke && \
+	  IMAGE=$$img tools/container-build.sh deb cfm-conf || exit 1; \
+	done
 	@# Stamp exactly the bytes that passed: sync refuses anything else.
 	cd $(PKG_DIR) && sha256sum cfm-edge-[0-9]*.x86_64.rpm > .tested
-	@echo "tested: $$(cat $(PKG_DIR)/.tested)"
+	cd $(DEB_DIR) && sha256sum cfm-edge_*_amd64.deb > .tested
+	@echo "tested: $$(cat $(PKG_DIR)/.tested) $$(cat $(DEB_DIR)/.tested)"
 
 # One command for the whole pre-publish run, in order: lint, the EL8 build
 # (its check section enforces the ELF/OpenSSL hardening), then smoke +
-# cfm-conf on EL8/9/10, which stamp the rpm for sync. Sub-makes, so the order
+# cfm-conf on EL8/9/10 and of the .deb on Debian/Ubuntu, which stamp both for sync. Sub-makes, so the order
 # holds under -j; BUILD_STAMP is exported, so all three see one stamp.
 release: ## lint + package + test-all: the tested rpm make sync uploads
 	$(MAKE) lint
@@ -158,7 +171,9 @@ doctor: ## Does this host have what a build needs?
 	  command -v $$t >/dev/null && echo "✓ $$t" || { echo "✗ $$t   (make deb; EL: dnf install dpkg cpio, EPEL for dpkg)"; miss=1; }; done; \
 	command -v shellcheck >/dev/null && echo "✓ shellcheck" \
 	  || { echo "✗ shellcheck   (make lint / make release; EL: dnf install ShellCheck, from EPEL)"; miss=1; }; \
-	for u in https://nginx.org/download/ https://quay.io https://repo.almalinux.org/almalinux/; do \
+	c=$$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://mirror.gcr.io/v2/); \
+	[ "$$c" != 000 ] && echo "✓ reach https://mirror.gcr.io (the .deb test images)" || { echo "✗ reach https://mirror.gcr.io (the .deb test images)"; miss=1; }; \
+	for u in https://nginx.org/download/ https://quay.io https://repo.almalinux.org/almalinux/ https://deb.debian.org/debian/ https://archive.ubuntu.com/ubuntu/; do \
 	  curl -fsI -o /dev/null --max-time 10 "$$u" && echo "✓ reach $$u" || { echo "✗ reach $$u"; miss=1; }; done; \
 	git ls-remote https://github.com/openresty/luajit2 HEAD >/dev/null 2>&1 \
 	  && echo "✓ git over https to github.com" || { echo "✗ git over https to github.com (modules are git-pinned)"; miss=1; }; \

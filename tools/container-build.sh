@@ -6,6 +6,10 @@
 #                                              fresh container, run tests/smoke.sh
 #   tools/container-build.sh <8|9|10> cfm-conf same, then run CFM's real edge
 #                                              config + Lua (tests/cfm-conf.sh; CFM_DIR=)
+#   tools/container-build.sh deb <smoke|cfm-conf>
+#                                              the same two tests on the .deb
+#                                              (dist/deb) in IMAGE, a Debian or
+#                                              Ubuntu image (default Debian 13)
 #
 # The repo is mounted read-only and copied inside, so the build never leaves
 # root-owned files in the checkout. Needs docker (or podman: ENGINE=podman).
@@ -16,11 +20,19 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EL="${1:?usage: $0 <8|9|10> <build|smoke|cfm-conf>}"
-MODE="${2:?usage: $0 <8|9|10> <build|smoke|cfm-conf>}"
+EL="${1:?usage: $0 <8|9|10|deb> <build|smoke|cfm-conf>}"
+MODE="${2:?usage: $0 <8|9|10|deb> <build|smoke|cfm-conf>}"
 ENGINE="${ENGINE:-docker}"
-IMAGE="${IMAGE:-quay.io/almalinuxorg/almalinux:${EL}}"
-OUT="${REPO_DIR}/dist/el${EL}"
+if [ "$EL" = deb ]; then
+    # Docker Hub rate-limits anonymous pulls; mirror.gcr.io is Google's
+    # mirror of its library images (debian, ubuntu), not rate-limited.
+    IMAGE="${IMAGE:-mirror.gcr.io/library/debian:13}"
+    OUT="${REPO_DIR}/dist/deb"
+    case "$MODE" in smoke|cfm-conf) ;; *) echo "deb: only smoke and cfm-conf (make deb builds the .deb)" >&2; exit 2 ;; esac
+else
+    IMAGE="${IMAGE:-quay.io/almalinuxorg/almalinux:${EL}}"
+    OUT="${REPO_DIR}/dist/el${EL}"
+fi
 
 # SELinux hosts (EL with podman, e.g. the devbox) refuse unlabelled bind
 # mounts: add the shared relabel option there.
@@ -50,6 +62,44 @@ if [ -n "${EDGE_CA:-}" ]; then
     done
 fi
 '
+
+# The .deb: install it with apt (which pulls its Depends) plus what the tests
+# use, then run the same tests the rpm gets. Behind the proxy, apt reads the
+# CA from the mounted file (no ca-certificates in the image yet) and the
+# mirrors over HTTPS.
+# shellcheck disable=SC2016  # expanded inside the container
+deb_prologue='
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if [ -n "${EDGE_CA:-}" ]; then
+    printf "Acquire::https::Proxy \"%s\";\nAcquire::https::CAInfo \"/etc/pki/ca-trust/source/anchors/edge-ca.crt\";\n" "$HTTPS_PROXY" >/etc/apt/apt.conf.d/99edge-proxy
+    for f in /etc/apt/sources.list.d/*.sources /etc/apt/sources.list; do
+        [ -f "$f" ] && sed -i "s|http://|https://|g" "$f"
+    done
+fi
+apt-get -qq update >/dev/null
+apt-get -qq install -y --no-install-recommends curl openssl binutils logrotate /debs/cfm-edge_*_amd64.deb >/dev/null
+'
+if [ "$EL" = deb ]; then
+    ls "$OUT"/cfm-edge_*_amd64.deb >/dev/null 2>&1 || { echo "no .deb in $OUT; run: make package deb" >&2; exit 1; }
+    case "$MODE" in
+    smoke)
+        # shellcheck disable=SC2016
+        "$ENGINE" "${args[@]}" -v "${OUT}:/debs:ro${Z}" "$IMAGE" bash -c "$deb_prologue"'
+            CFM_EDGE_PKG=deb bash /src/tests/smoke.sh
+        '
+        ;;
+    cfm-conf)
+        CFM_DIR="${CFM_DIR:-$(cd "$REPO_DIR/.." && pwd)/cfm}"
+        [ -f "$CFM_DIR/configs/openresty.conf" ] || { echo "CFM_DIR=$CFM_DIR is not a cfm checkout" >&2; exit 2; }
+        # shellcheck disable=SC2016
+        "$ENGINE" "${args[@]}" -v "${OUT}:/debs:ro${Z}" -v "${CFM_DIR}:/cfm:ro${Z}" "$IMAGE" bash -c "$deb_prologue"'
+            bash /src/tests/cfm-conf.sh /cfm
+        '
+        ;;
+    esac
+    exit 0
+fi
 
 case "$MODE" in
 build)
@@ -83,7 +133,7 @@ smoke)
     # shellcheck disable=SC2016
     "$ENGINE" "${args[@]}" -v "${OUT}:/rpms:ro${Z}" "$IMAGE" bash -c "$prologue"'
         dnf -q -y install --allowerasing curl procps-ng openssl binutils logrotate /rpms/cfm-edge-[0-9]*.x86_64.rpm >/dev/null
-        bash /src/tests/smoke.sh
+        CFM_EDGE_PKG=rpm bash /src/tests/smoke.sh
     '
     ;;
 cfm-conf)

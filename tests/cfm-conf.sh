@@ -8,7 +8,8 @@
 #
 #   1. render cfm's configs/openresty.conf into a scratch prefix (paths only:
 #      /usr/local/openresty/nginx, /var/lib/cfm, /var/cache/nginx are moved;
-#      `user cfm` becomes nobody; nothing else is edited) and `-t` it;
+#      `user cfm` becomes nobody and its group; nothing else is edited) and
+#      `-t` it;
 #   2. start it and send HTTP (9080) and HTTPS (9043, h2) requests through
 #      cfm.lua; the CFM daemon is absent, so this proves the Lua LOADS and runs
 #      its fail paths, not what it decides;
@@ -29,6 +30,9 @@ fail=0
 ok()   { printf '  ok    %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 check(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+
+# `user nobody;` alone means group nobody: EL has it, Debian / Ubuntu do not.
+NOBODY_GROUP="$(id -gn nobody 2>/dev/null || echo nobody)"
 
 R="$(mktemp -d /tmp/cfm-edge-cfmconf.XXXXXX)"
 stop_all() {
@@ -57,7 +61,7 @@ sed -e "s#/usr/local/openresty/nginx/conf/#$R/conf/#g" \
     -e "s#/usr/local/openresty/nginx/lua/#$R/lua-legacy/#g" \
     -e "s#/var/lib/cfm/#$R/lib/#g" \
     -e "s#/var/cache/nginx/#$R/cache/#g" \
-    -e 's#^user cfm;#user nobody;#' \
+    -e "s#^user cfm;#user nobody $NOBODY_GROUP;#" \
     "$CONF_SRC" >"$R/conf/nginx.conf"
 
 echo "== cfm config ($(basename "$CONF_SRC")) on $("$BIN" -v 2>&1)"
@@ -89,6 +93,7 @@ lua_scripts="$(for x in $scripts; do printf '["%s"]=true,' "$x"; done)"
 mods=""
 for f in "$R"/lib/lua/*.lua; do m="$(basename "$f" .lua)"; mods="$mods\"$m\","; done
 cat >"$R/req/nginx.conf" <<EOF
+user nobody $NOBODY_GROUP;
 worker_processes 1;
 error_log $R/req/logs/error.log warn;
 pid $R/req/logs/nginx.pid;

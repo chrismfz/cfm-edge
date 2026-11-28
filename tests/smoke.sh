@@ -1,7 +1,7 @@
 #!/bin/bash
 # smoke.sh — prove an INSTALLED cfm-edge can do what CFM's edge asks of it.
 #
-# Run as root on a host (or container) where the rpm is installed and nothing
+# Run as root on a host (or container) where the rpm or the .deb is installed and nothing
 # listens on 127.0.0.1:9099/9443/9081. It starts its own instance from a
 # scratch prefix (never /etc/cfm-edge), so it is safe next to a live edge.
 #
@@ -9,8 +9,8 @@
 #   - every non-CFM Lua module CFM requires: cjson(.safe), bit, ngx.ssl,
 #     ngx.balancer, resty.http, resty.maxminddb (+ resty.core/lrucache);
 #   - TLS + HTTP/2, and the QUIC/HTTP/3 listener parses and binds; a QUIC
-#     handshake with ALPN h3 and the cert by SNI (EL9/EL10; EL8 has no QUIC
-#     client);
+#     handshake with ALPN h3 and the cert by SNI (where the system OpenSSL is
+#     3.2+, the first with a QUIC client: EL9, EL10, Debian 13);
 #   - ssl_certificate_by_lua (sslcollector's path: clear + set cert from PEM);
 #   - balancer_by_lua (cfm.lua's origin-keepalive upstreams);
 #   - the binary's linkage: private LuaJIT, no system libssl/libcrypto.
@@ -24,6 +24,10 @@ fail=0
 ok()   { printf '  ok    %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 check(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+
+# The workers' group: `user nobody;` alone means group nobody, which EL has
+# and Debian / Ubuntu do not (theirs is nogroup).
+NOBODY_GROUP="$(id -gn nobody 2>/dev/null || echo nobody)"
 
 P="$(mktemp -d /tmp/cfm-edge-smoke.XXXXXX)"
 trap '"$BIN" -p "$P" -c "$P/conf/nginx.conf" -s stop >/dev/null 2>&1 || true; rm -rf "$P"' EXIT
@@ -99,10 +103,36 @@ echo "== post-upgrade restart"
 R=/usr/lib/cfm-edge/upgrade-restart.sh
 check "upgrade-restart.sh installed, executable" test -x "$R"
 check "upgrade-restart.sh parses as sh" sh -n "$R"
+# CFM_EDGE_PKG (rpm|deb, set by tools/container-build.sh) says which package
+# this run installed: its checks below must then run, or the smoke fails (a
+# test that cannot run must fail). Unset (a host run by hand), each branch
+# runs where its package manager has cfm-edge installed.
+PKG="${CFM_EDGE_PKG:-}"
+case "$PKG" in ''|rpm|deb) ;; *) bad "CFM_EDGE_PKG='$PKG' (rpm or deb)";; esac
+ran_pkg=""
 # The rpm runs it after the transaction, and never restarts in postun itself.
 if command -v rpm >/dev/null 2>&1 && rpm -q cfm-edge >/dev/null 2>&1; then
+    ran_pkg="$ran_pkg rpm"
     check "posttrans runs upgrade-restart.sh" bash -c "rpm -q --scripts cfm-edge | sed -n '/^posttrans/,/^[a-z]* scriptlet/p' | grep -q '$R'"
     check "no restart-on-upgrade in postun" bash -c "! rpm -q --scripts cfm-edge | sed -n '/^postun/,/^[a-z]* scriptlet/p' | grep -qE 'try-restart|restart |mark-restart'"
+fi
+# The .deb: the same restart from a dpkg trigger (after the whole dpkg run),
+# never from prerm / postrm, and NO dpkg conffile (CFM rewrites
+# /etc/cfm-edge/nginx.conf; a conffile would stop `apt upgrade -y`).
+if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W -f='${Status}' cfm-edge 2>/dev/null | grep -q 'ok installed'; then
+    ran_pkg="$ran_pkg deb"
+    I=/var/lib/dpkg/info
+    check "deb: interest-noawait cfm-edge-upgrade-restart" grep -qx 'interest-noawait cfm-edge-upgrade-restart' "$I/cfm-edge.triggers"
+    check "deb: postinst triggered runs upgrade-restart.sh" bash -c "sed -n '/^triggered)/,/;;/p' '$I/cfm-edge.postinst' | grep -q 'upgrade-restart.sh'"
+    check "deb: no restart in prerm / postrm" bash -c "! grep -hE 'try-restart|restart |deb-systemd-invoke' '$I/cfm-edge.prerm' '$I/cfm-edge.postrm'"
+    check "deb: no dpkg conffile" bash -c "[ -z \"\$(dpkg-query -W -f='\${Conffiles}' cfm-edge)\" ]"
+    check "deb: /etc seeded from the defaults (sums recorded)" bash -c "for f in /etc/cfm-edge/nginx.conf /etc/cfm-edge/mime.types /etc/logrotate.d/cfm-edge; do test -f \$f || exit 1; done; test -s /var/lib/cfm-edge/config-files.sha256"
+fi
+if [ -n "$PKG" ]; then
+    case " $ran_pkg " in
+        *" $PKG "*) ok "the $PKG package checks ran" ;;
+        *) bad "CFM_EDGE_PKG=$PKG, but its package manager does not report cfm-edge installed: the $PKG checks did not run" ;;
+    esac
 fi
 # Not running here (the smoke test runs its own instance, not the unit):
 # the script must do nothing and exit 0.
@@ -159,6 +189,7 @@ mkcert lua.test
 chmod 0755 "$P" "$P/certs"; chmod 0644 "$P"/certs/*
 
 cat >"$P/conf/nginx.conf" <<EOF
+user nobody $NOBODY_GROUP;
 worker_processes 1;
 error_log $P/logs/error.log info;
 pid $P/logs/nginx.pid;
@@ -273,12 +304,18 @@ fi
 # ALPN h3 negotiated, and the cert picked by ssl_certificate_by_lua
 # (sslcollector's path) or the default one. No EL curl has HTTP/3, so before
 # this the QUIC path was never exercised. openssl s_client -quic exists from
-# OpenSSL 3.2: EL9 and EL10 carry 3.5, EL8 carries 1.1.1. Skipped on EL8 only,
-# a written-down environment limit (CLAUDE.md); on EL9/EL10 a missing -quic
-# fails the check. test-all runs all three, so every build gets it.
-el=$(. /etc/os-release && echo "${VERSION_ID%%.*}")
-if [ "$el" = 8 ]; then
-    echo "  skip  QUIC handshake (EL8's OpenSSL 1.1.1 has no QUIC client; EL9 and EL10 run it)"
+# OpenSSL 3.2: EL9, EL10 and Debian 13 carry 3.5; EL8 1.1.1, Debian 12 and
+# Ubuntu 22.04 / 24.04 3.0. Skipped where the SYSTEM OpenSSL is older than 3.2
+# only, a written-down environment limit (CLAUDE.md); with 3.2+ a missing
+# -quic fails the check, and so does a system with no readable openssl
+# version (no openssl at all): an unknown is not "too old".
+# test-all runs EL9/EL10/Debian 13, so every build gets it.
+sslv=$(openssl version 2>/dev/null | awk '{print $2}')
+sslmaj=${sslv%%.*}; sslmin=${sslv#*.}; sslmin=${sslmin%%.*}
+if ! [[ "$sslmaj" =~ ^[0-9]+$ && "$sslmin" =~ ^[0-9]+$ ]]; then
+    bad "QUIC handshake: no system OpenSSL version to decide on (openssl: '${sslv:-not found}'); install openssl"
+elif [ "$sslmaj" -lt 3 ] || { [ "$sslmaj" = 3 ] && [ "$sslmin" -lt 2 ]; }; then
+    echo "  skip  QUIC handshake (system OpenSSL $sslv has no QUIC client; 3.2+ runs it: EL9, EL10, Debian 13)"
 else
     for pair in lua.test:lua.test other.test:default.test; do
         check "QUIC handshake, ALPN h3, SNI ${pair%%:*} -> CN=${pair##*:}" bash -c \

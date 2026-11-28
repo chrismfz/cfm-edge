@@ -143,7 +143,8 @@ On a new VM, `make doctor` checks all of this and names what is missing.
 make help               # every target, one line each
 make doctor             # does this host have what a build needs?
 make package            # THE rpm: built in AlmaLinux 8 -> dist/el8/cfm-edge-<nginx>-<YYYYMMDD.HHMMSS>.x86_64.rpm
-make test-all           # that rpm: smoke + cfm-conf on EL8, EL9, EL10
+make deb                # that rpm repacked as a .deb -> dist/deb/
+make test-all           # smoke + cfm-conf: the rpm on EL8/9/10, its .deb on Debian 12/13, Ubuntu 22.04/24.04
 make sources            # fetch + verify everything into SOURCES/
 make rpm-el9            # build in a clean AlmaLinux 9 container -> dist/el9/
 make smoke-el9          # install it in a fresh container, run tests/smoke.sh
@@ -193,7 +194,7 @@ On the devbox (AlmaLinux 10 + podman; EL8 is only the container image):
 ```sh
 make check                              # what is behind upstream (changes nothing)
 make update                             # rewrite versions.env; review git diff
-ENGINE=podman make package test-all     # build on EL8, test on EL8/9/10
+ENGINE=podman make package test-all     # build on EL8, test on EL8/9/10 + Debian/Ubuntu
 make sync                               # upload to repo.nixpal.com (like cfm)
 ```
 
