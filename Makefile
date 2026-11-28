@@ -31,8 +31,9 @@ include versions.env
 SHELL        := /bin/bash
 
 # --- Remote sync (same target as cfm's `make sync`) ---
-# Lands in chris@repo.nixpal.com:~/packages/rpm, where root's repos-update.sh
-# signs it and publishes it to https://repo.nixpal.com/el/ (createrepo).
+# Lands in chris@repo.nixpal.com:~/packages/{rpm,deb}, where root's
+# repos-update.sh signs and publishes them: the rpm to
+# https://repo.nixpal.com/el/ (createrepo), the .deb to /debian/ (reprepro).
 REMOTE_USER ?= chris
 REMOTE_HOST ?= repo.nixpal.com
 REMOTE_PORT ?= 65535
@@ -94,7 +95,7 @@ help: ## Show this help
 	  awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-40s\033[0m %s\n", $$1, $$2}'
 	@echo
 	@echo "Release: make update && make release && make sync"
-	@echo "         (then, as root on repo.nixpal.com: /root/repos-update.sh --rpm-only)"
+	@echo "         (then, as root on repo.nixpal.com: /root/repos-update.sh)"
 
 sources: ## Fetch + verify every pinned input into SOURCES/ (sha256, PGP, git pins)
 	tools/fetch-sources.sh SOURCES
@@ -201,30 +202,44 @@ update: ## Rewrite versions.env to the newest pins (then review the diff)
 	         echo "pins updated$$( [ $$rc = 4 ] && echo ' (SECURITY)' ): review git diff versions.env, then make package test-all sync"; fi;; \
 	  *) exit $$rc;; esac
 
-# Upload THE rpm (not debuginfo/src). Refuses an rpm whose exact bytes did not
-# pass test-all, and a filename the repo already has (a build stamp reused
-# through BUILD_STAMP= would silently change a published package). FORCE=1
-# overrides both, knowingly.
-sync: ## Upload the tested rpm to repo.nixpal.com (refuses an untested one)
+# Upload THE rpm (not debuginfo/src) and its .deb, together: every check below
+# runs on both before either is uploaded (the uploads themselves are two
+# rsyncs, not one atomic step: re-run sync after a failed upload). Refuses a package whose exact bytes did not pass test-all (its .tested), a
+# .deb that is not this rpm's repack (another version), and a filename the
+# repo already has (a build stamp reused through BUILD_STAMP= would silently
+# change a published package). FORCE=1 overrides those checks, knowingly.
+sync: ## Upload the tested rpm + .deb to repo.nixpal.com (refuses an untested one)
 	@set -euo pipefail; \
 	RPM_FILE="$$(ls -1 $(PKG_DIR)/cfm-edge-[0-9]*.x86_64.rpm 2>/dev/null | head -n1 || true)"; \
+	DEB_FILE="$$(ls -1 $(DEB_DIR)/cfm-edge_*_amd64.deb 2>/dev/null | head -n1 || true)"; \
 	[ -n "$$RPM_FILE" ] || { echo "❌ No rpm in $(PKG_DIR): run make package test-all"; exit 1; }; \
-	NAME="$$(basename "$$RPM_FILE")"; \
+	[ -n "$$DEB_FILE" ] || { echo "❌ No .deb in $(DEB_DIR): run make test-all (it repacks the rpm)"; exit 1; }; \
+	NAME="$$(basename "$$RPM_FILE")"; DNAME="$$(basename "$$DEB_FILE")"; \
+	V="$${NAME#cfm-edge-}"; V="$${V%.x86_64.rpm}"; \
+	[ "$$DNAME" = "cfm-edge_$${V}_amd64.deb" ] \
+	  || { echo "❌ $$DNAME is not the .deb of $$NAME: run make test-all"; exit 1; }; \
 	if [ "$(FORCE)" != 1 ]; then \
 	  ( cd $(PKG_DIR) && sha256sum -c --quiet .tested 2>/dev/null ) \
 	    || { echo "❌ $$NAME has not passed make test-all (or was rebuilt since): run make test-all"; exit 1; }; \
+	  ( cd $(DEB_DIR) && sha256sum -c --quiet .tested 2>/dev/null ) \
+	    || { echo "❌ $$DNAME has not passed make test-all (or was rebuilt since): run make test-all"; exit 1; }; \
 	  if $(SSH_CMD) $(REMOTE_USER)@$(REMOTE_HOST) "test -e $(REMOTE_DIR)/rpm/$$NAME" \
 	     || curl -sfI "https://$(REMOTE_HOST)/el/$$NAME" >/dev/null; then \
 	    echo "❌ $(REMOTE_HOST) already has $$NAME: rebuild (a new build gets a new stamp)"; exit 1; fi; \
+	  if $(SSH_CMD) $(REMOTE_USER)@$(REMOTE_HOST) "test -e $(REMOTE_DIR)/deb/$$DNAME" \
+	     || curl -sfI "https://$(REMOTE_HOST)/debian/pool/main/c/cfm-edge/$$DNAME" >/dev/null; then \
+	    echo "❌ $(REMOTE_HOST) already has $$DNAME: rebuild (a new build gets a new stamp)"; exit 1; fi; \
 	fi; \
-	( cd $(PKG_DIR) && sha256sum "$$NAME" > cfm-edge-checksums.txt ); \
+	( sha256sum "$$RPM_FILE" "$$DEB_FILE" | sed 's#  .*/#  #' ) > $(PKG_DIR)/cfm-edge-checksums.txt; \
 	echo "🌐 Syncing to $(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)"; \
-	$(SSH_CMD) $(REMOTE_USER)@$(REMOTE_HOST) "mkdir -p $(REMOTE_DIR)/rpm"; \
+	$(SSH_CMD) $(REMOTE_USER)@$(REMOTE_HOST) "mkdir -p $(REMOTE_DIR)/rpm $(REMOTE_DIR)/deb"; \
 	echo "→ Upload: $$RPM_FILE -> $(REMOTE_DIR)/rpm/"; \
 	rsync $(RSYNC_FLAGS) -e "$(SSH_CMD)" "$$RPM_FILE" "$(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)/rpm/"; \
+	echo "→ Upload: $$DEB_FILE -> $(REMOTE_DIR)/deb/"; \
+	rsync $(RSYNC_FLAGS) -e "$(SSH_CMD)" "$$DEB_FILE" "$(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)/deb/"; \
 	echo "→ Upload: cfm-edge-checksums.txt -> $(REMOTE_DIR)/"; \
 	rsync $(RSYNC_FLAGS) -e "$(SSH_CMD)" $(PKG_DIR)/cfm-edge-checksums.txt "$(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)/"; \
-	echo "✅ Uploaded. To publish: on $(REMOTE_HOST) run (as root) /root/repos-update.sh --rpm-only"
+	echo "✅ Uploaded. To publish both: on $(REMOTE_HOST) run (as root) /root/repos-update.sh"
 
 smoke-el8 smoke-el9 smoke-el10: ## Smoke the rpm built for that EL (dist/elN) in a clean container
 	tools/container-build.sh $(subst smoke-el,,$@) smoke
